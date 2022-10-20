@@ -1,0 +1,6 @@
+debian/dh_xine  usr/bin
+debian/tmp/usr/include
+debian/tmp/usr/lib/*/libxine*.so
+debian/tmp/usr/lib/*/pkgconfig/libxine.pc
+debian/tmp/usr/share/aclocal/xine.m4
+debian/xine.pm  usr/share/perl5/Debian/Debhelper/Sequence

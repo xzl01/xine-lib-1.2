@@ -1,0 +1,9 @@
+# We need to have packages depend on libxine2 rather than libxine2-bin
+# so that plugins are automatically pulled in.
+# (Merging libxine2 & libxine2-bin -> libxine1 causes a circular dependency.)
+
+libxine2-bin: symbols-declares-dependency-on-other-package libxine2 (libxine.so.2)
+libxine2-bin: package-name-doesnt-match-sonames libxine2
+
+# it's just a damn long line that can't be shortened
+groff-message usr/share/man/man5/xine.5.gz (line 1) 227: warning [p 3, 4.5i]: cannot adjust line

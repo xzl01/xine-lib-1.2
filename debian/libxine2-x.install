@@ -1,0 +1,23 @@
+#!/usr/bin/dh-exec
+# X-based video output plugins
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_*_vdpau*.so
+#[linux-any] debian/tmp/usr/lib/*/xine/plugins/*/xineplug_vo_out_dxr3.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_vo_out_opengl.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_vo_out_opengl2.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_vo_out_sdl.so
+[linux-any] debian/tmp/usr/lib/*/xine/plugins/*/xineplug_vo_out_vaapi.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_vo_out_xcbshm.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_vo_out_xcbxv.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_vo_out_xdirectfb.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_vo_out_xshm.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_vo_out_xv.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_vo_out_xvmc.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_vo_out_xxmc.so
+[linux-any] debian/tmp/usr/lib/*/xine/plugins/*/xineplug_vo_gl_egl_wl.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_vo_gl_egl_x11.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_vo_gl_glx.so
+[linux-any] debian/tmp/usr/lib/*/xine/plugins/*/xineplug_hw_frame_vaapi.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_va_display_drm.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_va_display_glx.so
+[linux-any] debian/tmp/usr/lib/*/xine/plugins/*/xineplug_va_display_wl.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_va_display_x11.so

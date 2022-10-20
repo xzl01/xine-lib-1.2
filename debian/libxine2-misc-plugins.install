@@ -1,0 +1,83 @@
+#!/usr/bin/dh-exec
+
+# input plugins
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_inp_bluray.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_inp_cdda.so
+[linux-any] debian/tmp/usr/lib/*/xine/plugins/*/xineplug_inp_dvb.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_inp_dvd.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_inp_mms.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_inp_network.so
+[linux-any] debian/tmp/usr/lib/*/xine/plugins/*/xineplug_inp_pvr.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_inp_rtp.so
+[!hurd-i386] debian/tmp/usr/lib/*/xine/plugins/*/xineplug_inp_smb.so
+#[linux-any] debian/tmp/usr/lib/*/xine/plugins/*/xineplug_inp_v4l.so
+[linux-any] debian/tmp/usr/lib/*/xine/plugins/*/xineplug_inp_v4l2.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_inp_vcd.so
+[!hurd-i386] debian/tmp/usr/lib/*/xine/plugins/*/xineplug_inp_vcdo.so
+
+# audio output plugins
+[linux-any] debian/tmp/usr/lib/*/xine/plugins/*/xineplug_ao_out_alsa.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_ao_out_jack.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_ao_out_oss.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_ao_out_pulseaudio.so
+
+# video output plugins which don't fit in elsewhere
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_vo_out_raw.so
+[linux-any] debian/tmp/usr/lib/*/xine/plugins/*/xineplug_dxr3.so
+
+# decoder plugins
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_decode_dav1d.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_decode_dvaudio.so
+#[linux-any] debian/tmp/usr/lib/*/xine/plugins/*/xineplug_decode_dxr3_spu.so
+#[linux-any] debian/tmp/usr/lib/*/xine/plugins/*/xineplug_decode_dxr3_video.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_decode_gsm610.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_decode_image.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_decode_libaom.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_decode_libjpeg.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_decode_libvpx.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_decode_lpcm.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_decode_mpc.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_decode_rawvideo.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_decode_real.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_decode_to_spdif.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_decode_spu.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_decode_spucc.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_decode_spucmml.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_decode_spudvb.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_decode_spuhdmv.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_decode_libpng.so
+
+# demuxer plugins
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_dmx_asf.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_dmx_audio.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_dmx_fli.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_dmx_games.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_dmx_image.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_dmx_mng.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_dmx_modplug.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_dmx_nsv.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_dmx_playlist.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_dmx_pva.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_dmx_slave.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_dmx_video.so
+
+# decoder/demuxer (combined) plugins
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_flac.so
+#debian/tmp/usr/lib/*/xine/plugins/*/xineplug_nsf.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_wavpack.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_xiph.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_sputext.so
+
+# postprocess plugins
+debian/tmp/usr/lib/*/xine/plugins/*/post/xineplug_post_mosaico.so
+debian/tmp/usr/lib/*/xine/plugins/*/post/xineplug_post_audio_filters.so
+debian/tmp/usr/lib/*/xine/plugins/*/post/xineplug_post_visualizations.so
+debian/tmp/usr/lib/*/xine/plugins/*/post/xineplug_post_goom.so
+debian/tmp/usr/lib/*/xine/plugins/*/post/xineplug_post_switch.so
+debian/tmp/usr/lib/*/xine/plugins/*/post/xineplug_post_tvtime.so
+
+# i386-specific plugins
+#[any-i386] debian/tmp/usr/lib/*/xine/plugins/*/xineplug_decode_qt.so
+[any-i386] debian/tmp/usr/lib/*/xine/plugins/*/xineplug_decode_w32dll.so
+#debian/tmp/usr/lib/*/xine/plugins/*/vidix/*.so
+#debian/tmp/usr/lib/*/xine/plugins/*/xineplug_vo_out_vidix.so

@@ -1,0 +1,53 @@
+#!/usr/bin/make -f
+
+include /usr/share/dpkg/architecture.mk
+export DEB_BUILD_MAINT_OPTIONS = hardening=+all
+
+ifneq ($(DEB_HOST_GNU_TYPE),$(DEB_BUILD_GNU_TYPE))
+  $(error cross compiling is not supported by xine)
+endif
+
+# predefine as empty
+DEB_BUILD_CONFIG_OPTIONS :=
+
+ifneq (,$(findstring noopt,$(DEB_BUILD_OPTIONS)))
+	DEB_BUILD_CONFIG_OPTIONS += --disable-optimizations --enable-debug
+endif
+ifneq (,$(findstring linux,$(DEB_HOST_GNU_TYPE)))
+	DEB_BUILD_CONFIG_OPTIONS += --enable-libv4l
+endif
+
+# set configure flags here
+CONFIGURE_FLAGS := \
+	--disable-static \
+	--with-external-libmad \
+	--with-external-a52dec \
+	--with-external-libdts \
+	--with-external-ffmpeg \
+	--with-external-libmpcdec \
+	--with-external-dvdnav \
+	--with-libflac \
+	--with-wavpack \
+	--with-freetype \
+	--disable-vidix \
+	--enable-directfb \
+	--disable-nosefart \
+	$(DEB_BUILD_CONFIG_OPTIONS) \
+	$(shell dpkg-buildflags --export=configure) \
+	LIBMODPLUG_LIBS="$(filter-out -lstdc++ -lm,$(shell pkg-config --libs libmodplug))"
+
+export V=1  # verbose log
+
+%:
+	dh $@
+
+override_dh_auto_configure:
+	dh_auto_configure -- $(CONFIGURE_FLAGS)
+
+override_dh_installdocs:
+	dh_installdocs -plibxine2 -plibxine2-console -plibxine2-dev \
+		-plibxine2-ffmpeg -plibxine2-gnome -plibxine2-misc-plugins \
+		-plibxine2-vdr -plibxine2-x \
+		--link-doc=libxine2-bin
+	dh_installdocs -plibxine2-doc --doc-main-package libxine2-doc
+	dh_installdocs --remaining-packages

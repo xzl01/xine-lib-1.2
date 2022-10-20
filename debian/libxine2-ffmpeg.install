@@ -1,0 +1,8 @@
+# postprocess plugins
+debian/tmp/usr/lib/*/xine/plugins/*/post/xineplug_post_planar.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_decode_a52.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_decode_dts.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_decode_faad.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_decode_ff.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_decode_mad.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_decode_mpeg2*.so
