@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2001-2021 the xine project
+ * Copyright (C) 2001-2023 the xine project
  *
  * This file is part of xine, a free video player.
  *
@@ -1225,14 +1225,34 @@ static qt_error parse_trak_atom (qt_trak *trak, uint8_t *trak_atom) {
         /* in mp4 files the audio fourcc is always 'mp4a' - the codec is
          * specified by the object type id field in the esds atom */
         if (p->codec_fourcc == MP4A_FOURCC) {
+          static const uint8_t atag_index[256] = {
+            [0x40] = 0, /* AAC, MP4ALS */
+            [0x66] = 0, /* MPEG2 AAC Main */
+            [0x67] = 0, /* MPEG2 AAC Low */
+            [0x68] = 0, /* MPEG2 AAC SSR */
+            [0x69] = 1, /* MP3 13818-3, MP2 11172-3 */
+            [0x6B] = 1, /* MP3 11172-3 */
+            [0xA5] = 2, /* AC3 */
+            [0xA6] = 3, /* EAC3 */
+            [0xA9] = 4, /* DTS mp4ra.org */
+            [0xDD] = 5, /* Vorbis non standard, gpac uses it */
+            [0xE1] = 6, /* QCELP */
+          };
+          static const struct {
+            uint32_t buftype;
+            char name[8];
+          } atag_info[7] = {
+            [0] = { BUF_AUDIO_AAC,    "aac" }, /** << note: using this as default. */
+            [1] = { BUF_AUDIO_MPEG,   "mp3" },
+            [2] = { BUF_AUDIO_A52,    "ac3" },
+            [3] = { BUF_AUDIO_EAC3,   "eac3" },
+            [4] = { BUF_AUDIO_DTS,    "dts" },
+            [5] = { BUF_AUDIO_VORBIS, "vorbis" },
+            [6] = { BUF_AUDIO_QCLP,   "qcelp" },
+          };
           p->s.audio.vbr = 1;
-          if (p->object_type_id == 221) {
-            p->codec_buftype = BUF_AUDIO_VORBIS;
-            memcpy (p->codec_str, "vorbis", 7);
-          } else if (p->object_type_id == 107) {
-            p->codec_buftype = BUF_AUDIO_MPEG;
-            memcpy (p->codec_str, "mp3", 4);
-          }
+          p->codec_buftype = atag_info[atag_index[p->object_type_id & 255]].buftype;
+          strcpy (p->codec_str, atag_info[atag_index[p->object_type_id & 255]].name);
         }
         /* if this is MP4 audio, mark the trak as VBR */
         else if ((p->codec_fourcc == SAMR_FOURCC) ||
@@ -3533,9 +3553,10 @@ static int demux_qt_send_chunk(demux_plugin_t *this_gen) {
     while (remaining_sample_bytes) {
       buf = this->video_fifo->buffer_pool_size_alloc (this->video_fifo, remaining_sample_bytes);
       buf->type = trak->properties->codec_buftype;
-      buf->extra_info->input_time = qt_pts_2_msecs (trak->frames[i].pts);
-      buf->extra_info->input_normpos = qt_msec_2_normpos (this, buf->extra_info->input_time);
       buf->pts = trak->frames[i].pts + (int64_t)trak->frames[i].ptsoffs + this->ptsoffs;
+      buf->extra_info->input_time = qt_pts_2_msecs (buf->pts);
+      buf->extra_info->total_time = this->qt.msecs;
+      buf->extra_info->input_normpos = qt_msec_2_normpos (this, buf->extra_info->input_time);
 
       buf->decoder_flags |= BUF_FLAG_FRAMERATE;
       buf->decoder_info[0] = frame_duration;
@@ -3595,6 +3616,7 @@ static int demux_qt_send_chunk(demux_plugin_t *this_gen) {
       buf = this->audio_fifo->buffer_pool_size_alloc (this->audio_fifo, remaining_sample_bytes);
       buf->type = trak->properties->codec_buftype;
       buf->extra_info->input_time = qt_pts_2_msecs (trak->frames[i].pts);
+      buf->extra_info->total_time = this->qt.msecs;
       buf->extra_info->input_normpos = qt_msec_2_normpos (this, buf->extra_info->input_time);
       /* The audio chunk is often broken up into multiple 8K buffers when
        * it is sent to the audio decoder. Only attach the proper timestamp

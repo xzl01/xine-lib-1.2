@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2000-2019 the xine project
+ * Copyright (C) 2000-2022 the xine project
  *
  * This file is part of xine, a free video player.
  *
@@ -735,7 +735,7 @@ static ao_driver_t *open_plugin (audio_driver_class_t *class_gen, const void *da
 				       _("Specifies the base part of the audio device name, "
 					 "to which the OSS device number is appended to get the "
 					 "full device name.\nSelect \"auto\" if you want xine to "
-					 "auto detect the corret setting."),
+					 "auto detect the correct setting."),
 					10, NULL, NULL);
   /* devname_num is the N in '/dev[/sound]/dsp[N]'. Set to -1 for nothing */
   devname_num = config->register_num(config, "audio.device.oss_device_number", -1,
@@ -1002,6 +1002,9 @@ static ao_driver_t *open_plugin (audio_driver_class_t *class_gen, const void *da
     int audio_devs;
     char *parse;
 
+    this->mixer.fd = -1;
+    mixer_dev[0] = 0;
+
     mixer_num = config->register_num(config, "audio.device.oss_mixer_number", -1,
 				     _("OSS audio mixer number, -1 for none"),
 				     _("The full mixer device name is created by taking the "
@@ -1024,9 +1027,9 @@ static ao_driver_t *open_plugin (audio_driver_class_t *class_gen, const void *da
 	snprintf(mixer_dev, sizeof(mixer_dev), "%smixer", mixer_name);
       else
 	snprintf(mixer_dev, sizeof(mixer_dev), "%smixer%d", mixer_name, mixer_num);
-    }
 
-    this->mixer.fd = xine_open_cloexec(mixer_dev, O_RDONLY);
+      this->mixer.fd = xine_open_cloexec(mixer_dev, O_RDONLY);
+    }
 
     if(this->mixer.fd != -1) {
 

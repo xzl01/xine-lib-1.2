@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2006-2019 the xine project
+ * Copyright (C) 2006-2022 the xine project
  *
  * This file is part of xine, a free video player.
  *
@@ -299,6 +299,8 @@ static video_decoder_t *open_plugin (video_decoder_class_t *class_gen,
 #endif
 
   this = (image_decoder_t *) calloc(1, sizeof(image_decoder_t));
+  if (!this)
+    return NULL;
 
   this->video_decoder.decode_data         = image_decode_data;
   this->video_decoder.flush               = image_flush;

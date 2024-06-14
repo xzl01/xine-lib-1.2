@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2001-2021 the xine project
+ * Copyright (C) 2001-2023 the xine project
  *
  * This file is part of xine, a free video player.
  *
@@ -32,11 +32,18 @@
 #include <math.h>
 #include <assert.h>
 
-#ifdef HAVE_FFMPEG_AVUTIL_H
-#  include <avcodec.h>
-#else
-#  include <libavcodec/avcodec.h>
+#if defined(HAVE_LIBAVUTIL_AVUTIL_H)
+#  include <libavutil/avutil.h>
+#endif
+
+#if defined(HAVE_LIBAVUTIL_MEM_H)
 #  include <libavutil/mem.h>
+#endif
+
+#if defined(HAVE_AVUTIL_AVCODEC_H)
+#  include <libavcodec/avcodec.h>
+#else
+#  include <avcodec.h>
 #endif
 
 #define LOG_MODULE "ffmpeg_video_dec"
@@ -127,7 +134,6 @@ struct ff_video_decoder_s {
 
   uint8_t           decoder_ok:1;
   uint8_t           decoder_init_mode:1;
-  uint8_t           is_mpeg12:1;
 #ifdef HAVE_POSTPROC
   uint8_t           pp_available:1;
 #endif
@@ -1392,7 +1398,7 @@ static void ff_setup_rgb2yuy2 (ff_video_decoder_t *this, int pix_fmt) {
 #if defined(AV_PIX_FMT_YUV420P9) || defined(AV_PIX_FMT_YUV420P10)
 static void ff_get_deep_color (uint8_t *src, int sstride, uint8_t *dest, int dstride,
   int width, int height, uint8_t *tab) {
-  uint16_t *p = (uint16_t *) src;
+  uint16_t *p = (uint16_t *)ASSUME_ALIGNED_2 (src, 2);
   uint8_t  *q = dest;
   int       spad = sstride / 2 - width;
   int       dpad = dstride - width;
@@ -1699,7 +1705,7 @@ static int ff_vc1_find_header(ff_video_decoder_t *this, buf_element_t *buf)
 
 static int ff_check_extradata(ff_video_decoder_t *this, unsigned int codec_type, buf_element_t *buf)
 {
-  if (this->context && this->context->extradata)
+  if (this->context->extradata)
     return 1;
 
   switch (codec_type) {
@@ -1713,8 +1719,6 @@ static int ff_check_extradata(ff_video_decoder_t *this, unsigned int codec_type,
 
 static void ff_init_mpeg12_mode(ff_video_decoder_t *this)
 {
-  this->is_mpeg12 = 1;
-
   if (this->decoder_init_mode) {
     _x_meta_info_set_utf8(this->stream, XINE_META_INFO_VIDEOCODEC,
                           "mpeg-1 (ffmpeg)");
@@ -1725,7 +1729,8 @@ static void ff_init_mpeg12_mode(ff_video_decoder_t *this)
 
   if ( this->mpeg_parser == NULL ) {
     this->mpeg_parser = calloc(1, sizeof(mpeg_parser_t));
-    mpeg_parser_init(this->mpeg_parser, AV_INPUT_BUFFER_PADDING_SIZE);
+    if (this->mpeg_parser)
+      mpeg_parser_init(this->mpeg_parser, AV_INPUT_BUFFER_PADDING_SIZE);
   }
 }
 
@@ -1739,7 +1744,7 @@ static void ff_handle_preview_buffer (ff_video_decoder_t *this, buf_element_t *b
     ff_init_mpeg12_mode(this);
   }
 
-  if (this->decoder_init_mode && !this->is_mpeg12) {
+  else if (this->decoder_init_mode && !this->mpeg_parser) {
 
     if (!ff_check_extradata(this, codec_type, buf))
       return;
@@ -1799,22 +1804,24 @@ static void ff_handle_header_buffer (ff_video_decoder_t *this, buf_element_t *bu
 #ifdef XFF_AVCODEC_SUB_ID
         this->context->sub_id = _X_BE_32(&this->buf[30]);
 #endif
-        this->context->extradata_size = this->size - 26;
-	if (this->context->extradata_size < 8) {
-	  this->context->extradata_size= 8;
-	  this->context->extradata = calloc(1, this->context->extradata_size +
-                                            AV_INPUT_BUFFER_PADDING_SIZE);
-          ((uint32_t *)this->context->extradata)[0] = 0;
-	  if (codec_type == BUF_VIDEO_RV10)
-	     ((uint32_t *)this->context->extradata)[1] = 0x10000000;
-	  else
-	     ((uint32_t *)this->context->extradata)[1] = 0x10003001;
+        if (this->size < 8 + 26) {
+          uint32_t *b = calloc (1, 8 + AV_INPUT_BUFFER_PADDING_SIZE);
+          if (b) {
+            this->context->extradata_size = 8;
+            this->context->extradata = (uint8_t *)b;
+            b[0] = 0;
+            if (codec_type == BUF_VIDEO_RV10)
+              b[1] = 0x10000000;
+            else
+              b[1] = 0x10003001;
+          }
 	} else {
-          this->context->extradata = malloc(this->context->extradata_size +
-                                            AV_INPUT_BUFFER_PADDING_SIZE);
-	  memcpy(this->context->extradata, this->buf + 26,
-	         this->context->extradata_size);
-          memset(this->context->extradata + this->context->extradata_size, 0, AV_INPUT_BUFFER_PADDING_SIZE);
+          this->context->extradata = malloc (this->size - 26 + AV_INPUT_BUFFER_PADDING_SIZE);
+          if (this->context->extradata) {
+            this->context->extradata_size = this->size - 26;
+            memcpy (this->context->extradata, this->buf + 26, this->context->extradata_size);
+            memset (this->context->extradata + this->context->extradata_size, 0, AV_INPUT_BUFFER_PADDING_SIZE);
+          }
 	}
 
 	xprintf(this->stream->xine, XINE_VERBOSITY_LOG,
@@ -2066,9 +2073,12 @@ static void ff_handle_mpeg12_buffer (ff_video_decoder_t *this, buf_element_t *bu
 
   lprintf("handle_mpeg12_buffer\n");
 
-  if (!this->is_mpeg12) {
+  if (!this->mpeg_parser) {
     /* initialize mpeg parser */
     ff_init_mpeg12_mode(this);
+    if (!this->mpeg_parser) {
+      return;
+    }
   }
 
 #ifdef DEBUG_MPEG_PARSER
@@ -2653,7 +2663,7 @@ static void ff_decode_data (video_decoder_t *this_gen, buf_element_t *buf) {
       }
 
     } else {
-      if (this->decoder_init_mode && !this->is_mpeg12)
+      if (this->decoder_init_mode)
         ff_handle_preview_buffer(this, buf);
 
       /* decode */
@@ -2875,7 +2885,7 @@ static void ff_reset (video_decoder_t *this_gen) {
 #endif
   }
 
-  if (this->is_mpeg12)
+  if (this->mpeg_parser)
     mpeg_parser_reset(this->mpeg_parser);
 
   /* this->pts_tag_pass = 0; */
@@ -2997,7 +3007,6 @@ static video_decoder_t *ff_video_open_plugin (video_decoder_class_t *class_gen, 
 #ifndef HAVE_ZERO_SAFE_MEM
   this->size            = 0;
   this->decoder_ok      = 0;
-  this->is_mpeg12       = 0;
   this->aspect_ratio    = 0;
   this->pts_tag_pass    = 0;
 #ifdef HAVE_POSTPROC

@@ -38,7 +38,7 @@ dnl symbol is present at link time.
 AC_DEFUN([AC_CHECK_SYMBOL], [
   AC_CACHE_CHECK([for $1 symbol presence],
     AS_TR_SH([ac_cv_symbol_$1]),
-    [AC_TRY_LINK([extern void *$1;], [void *tmp = $1;],
+    [AC_LINK_IFELSE([AC_LANG_PROGRAM([[extern void *$1;]], [[void *tmp = $1;]])],
        [eval "AS_TR_SH([ac_cv_symbol_$1])=yes"],
        [eval "AS_TR_SH([ac_cv_symbol_$1])=no"])
     ])

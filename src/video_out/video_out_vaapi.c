@@ -1,6 +1,6 @@
 /*
  * Copyright (C) 2012 Edgar Hucek <gimli|@dark-green.com>
- * Copyright (C) 2012-2020 xine developers
+ * Copyright (C) 2012-2023 xine developers
  *
  * This file is part of xine, a free video player.
  *
@@ -216,13 +216,14 @@ struct vaapi_driver_s {
   int                 soft_image_is_bound;
 
   /* subpicture */
-  VAImageFormat       *va_subpic_formats;
-  int                 va_num_subpic_formats;
+  VAImageFormat       bgra_subpic_format;
+  unsigned int        bgra_subpic_flags;
   VAImage             va_subpic_image;
   VASubpictureID      va_subpic_id;
   int                 va_subpic_width;
   int                 va_subpic_height;
   unsigned int        last_sub_image_fmt;
+  int                 overlay_mode;
 
   pthread_mutex_t     vaapi_lock;
 
@@ -254,6 +255,16 @@ struct vaapi_driver_s {
   VASurfaceID         va_soft_surface_ids_storage[SOFT_SURFACES + 1];
   VAImage             va_soft_images_storage[SOFT_SURFACES + 1];
   vaapi_context_impl_t *va;
+
+#ifdef ENABLE_VA_GLX
+  void                (GLAPIENTRY *mpglBindTexture) (GLenum, GLuint);
+  void                (GLAPIENTRY *mpglXBindTexImage) (Display *, GLXDrawable, int, const int *);
+  void                (GLAPIENTRY *mpglXReleaseTexImage) (Display *, GLXDrawable, int);
+  GLXPixmap           (GLAPIENTRY *mpglXCreatePixmap) (Display *, GLXFBConfig, Pixmap, const int *);
+  void                (GLAPIENTRY *mpglXDestroyPixmap) (Display *, GLXPixmap);
+  const GLubyte       *(GLAPIENTRY *mpglGetString) (GLenum);
+  void                (GLAPIENTRY *mpglGenPrograms) (GLsizei, GLuint *);
+#endif
 };
 
 /* import common color matrix stuff */
@@ -263,20 +274,10 @@ struct vaapi_driver_s {
 #define CM_DRIVER_T vaapi_driver_t
 #include "color_matrix.c"
 
-static void vaapi_destroy_subpicture(vaapi_driver_t *this);
-static int vaapi_ovl_associate(vaapi_driver_t *this, int format, int bShow);
-static VAStatus vaapi_destroy_soft_surfaces(vaapi_driver_t *this);
+static void vaapi_destroy_subpicture (vaapi_driver_t *this);
+static int vaapi_ovl_associate (vaapi_driver_t *this, int format, int bShow);
+static VAStatus vaapi_destroy_soft_surfaces (vaapi_driver_t *this);
 static int vaapi_set_property (vo_driver_t *this_gen, int property, int value);
-
-#ifdef ENABLE_VA_GLX
-void (GLAPIENTRY *mpglBindTexture)(GLenum, GLuint);
-void (GLAPIENTRY *mpglXBindTexImage)(Display *, GLXDrawable, int, const int *);
-void (GLAPIENTRY *mpglXReleaseTexImage)(Display *, GLXDrawable, int);
-GLXPixmap (GLAPIENTRY *mpglXCreatePixmap)(Display *, GLXFBConfig, Pixmap, const int *);
-void (GLAPIENTRY *mpglXDestroyPixmap)(Display *, GLXPixmap);
-const GLubyte *(GLAPIENTRY *mpglGetString)(GLenum);
-void (GLAPIENTRY *mpglGenPrograms)(GLsizei, GLuint *);
-#endif
 
 #if defined(LOG) || defined(DEBUG)
 static const char *string_of_VAImageFormat(VAImageFormat *imgfmt)
@@ -355,19 +356,21 @@ static int vaapi_x11_untrap_errors(void)
 
 #ifdef ENABLE_VA_GLX
 
-static void vaapi_appendstr(char **dst, const char *str)
-{
-    int newsize;
-    char *newstr;
-    if (!str)
-        return;
-    newsize = strlen(*dst) + 1 + strlen(str) + 1;
-    newstr = realloc(*dst, newsize);
-    if (!newstr)
-        return;
-    *dst = newstr;
-    strcat(*dst, " ");
-    strcat(*dst, str);
+static void vaapi_appendstr (char **dst, size_t *len, const char *str) {
+  size_t newsize, slen;
+  char *newstr;
+
+  if (!str)
+    return;
+  slen = strlen (str);
+  newsize = *len + 1 + slen;
+  newstr = realloc (*dst, newsize + 1);
+  if (!newstr)
+    return;
+  *dst = newstr;
+  newstr[*len] = ' ';
+  memcpy (newstr + *len + 1, str, slen + 1);
+  *len = newsize;
 }
 
 /* Return the address of a linked function */
@@ -383,62 +386,54 @@ static void *vaapi_getdladdr (const char *s) {
 }
 
 /* Resolve opengl functions. */
-static void vaapi_get_functions(void *(*getProcAddress)(const GLubyte *),
-                                const char *ext2)
-{
-  static const struct {
-    void       *funcptr;
-    const char *extstr;
-    const char *funcnames[4];
-  } extfuncs[] = {
-    { &mpglBindTexture,
-      NULL,
-      { "glBindTexture", "glBindTextureARB", "glBindTextureEXT", NULL } },
-    { &mpglXBindTexImage,
-      "GLX_EXT_texture_from_pixmap",
-      {" glXBindTexImageEXT", NULL }, },
-    { &mpglXReleaseTexImage,
-      "GLX_EXT_texture_from_pixmap",
-      { "glXReleaseTexImageEXT", NULL} },
-    { &mpglXCreatePixmap,
-      "GLX_EXT_texture_from_pixmap",
-      { "glXCreatePixmap", NULL } },
-    { &mpglXDestroyPixmap,
-      "GLX_EXT_texture_from_pixmap",
-      { "glXDestroyPixmap", NULL } },
-    { &mpglGenPrograms, "_program",
-      { "glGenProgramsARB", NULL } },
-};
-
+static void vaapi_get_functions (vaapi_driver_t *this, void *(*getProcAddress)(const GLubyte *), const char *ext2) {
   const char *extensions;
   char *allexts;
-  size_t ext;
+  size_t l1, l2;
 
   if (!getProcAddress)
     getProcAddress = (void *)vaapi_getdladdr;
 
   /* special case, we need glGetString before starting to find the other functions */
-  mpglGetString = getProcAddress("glGetString");
-  if (!mpglGetString)
-      mpglGetString = glGetString;
+  this->mpglGetString = getProcAddress ("glGetString");
+  if (!this->mpglGetString)
+    this->mpglGetString = glGetString;
 
-  extensions = (const char *)mpglGetString(GL_EXTENSIONS);
-  if (!extensions) extensions = "";
-  if (!ext2) ext2 = "";
-  allexts = malloc(strlen(extensions) + strlen(ext2) + 2);
-  strcpy(allexts, extensions);
-  strcat(allexts, " ");
-  strcat(allexts, ext2);
+  extensions = (const char *)this->mpglGetString (GL_EXTENSIONS);
+  if (!extensions)
+    extensions = "";
+  if (!ext2)
+    ext2 = "";
+  l1 = strlen (extensions);
+  l2 = strlen (ext2);
+  allexts = malloc (l1 + 1 + l2 + 1);
+  memcpy (allexts, extensions, l1);
+  allexts[l1] = ' ';
+  memcpy (allexts + l1 + 1, ext2, l2);
+  allexts[l1 + 1 + l2] = 0;
   lprintf("vaapi_get_functions: OpenGL extensions string:\n%s\n", allexts);
-  for (ext = 0; ext < sizeof(extfuncs) / sizeof(extfuncs[0]); ext++) {
-    void *ptr = NULL;
-    int i;
-    if (!extfuncs[ext].extstr || strstr(allexts, extfuncs[ext].extstr)) {
-      for (i = 0; !ptr && extfuncs[ext].funcnames[i]; i++)
-        ptr = getProcAddress((const GLubyte *)extfuncs[ext].funcnames[i]);
-    }
-    *(void **)extfuncs[ext].funcptr = ptr;
+
+  this->mpglBindTexture = getProcAddress ((const GLubyte *)"glBindTexture");
+  if (!this->mpglBindTexture)
+    this->mpglBindTexture = getProcAddress ((const GLubyte *)"glBindTextureARB");
+  if (!this->mpglBindTexture)
+    this->mpglBindTexture = getProcAddress ((const GLubyte *)"glBindTextureEXT");
+  
+  this->mpglXBindTexImage = NULL;
+  this->mpglXReleaseTexImage = NULL;
+  this->mpglXCreatePixmap = NULL;
+  this->mpglXDestroyPixmap = NULL;
+  if (strstr (allexts, "GLX_EXT_texture_from_pixmap")) {
+    this->mpglXBindTexImage = getProcAddress ((const GLubyte *)"glXBindTexImageEXT");
+    this->mpglXReleaseTexImage = getProcAddress ((const GLubyte *)"glXReleaseTexImageEXT");
+    this->mpglXCreatePixmap = getProcAddress ((const GLubyte *)"glXCreatePixmap");
+    this->mpglXDestroyPixmap = getProcAddress ((const GLubyte *)"glXDestroyPixmap");
   }
+
+  this->mpglGenPrograms = NULL;
+  if (strstr (allexts, "_program"))
+    this->mpglGenPrograms = getProcAddress ((const GLubyte *)"glGenProgramsARB");
+
   lprintf("\n");
   free(allexts);
 }
@@ -503,11 +498,11 @@ static int vaapi_opengl_verify_direct (const x11_visual_t *vis) {
 static int vaapi_glx_bind_texture(vaapi_driver_t *this)
 {
   glEnable(GL_TEXTURE_2D);
-  mpglBindTexture(GL_TEXTURE_2D, this->gl_texture);
+  this->mpglBindTexture (GL_TEXTURE_2D, this->gl_texture);
 
   if (this->opengl_use_tfp) {
     vaapi_x11_trap_errors();
-    mpglXBindTexImage(this->display, this->gl_pixmap, GLX_FRONT_LEFT_EXT, NULL);
+    this->mpglXBindTexImage (this->display, this->gl_pixmap, GLX_FRONT_LEFT_EXT, NULL);
     XSync(this->display, False);
     if (vaapi_x11_untrap_errors())
       xprintf(this->xine, XINE_VERBOSITY_LOG, LOG_MODULE " vaapi_glx_bind_texture : Update bind_tex_image failed\n");
@@ -520,12 +515,12 @@ static int vaapi_glx_unbind_texture(vaapi_driver_t *this)
 {
   if (this->opengl_use_tfp) {
     vaapi_x11_trap_errors();
-    mpglXReleaseTexImage(this->display, this->gl_pixmap, GLX_FRONT_LEFT_EXT);
+    this->mpglXReleaseTexImage (this->display, this->gl_pixmap, GLX_FRONT_LEFT_EXT);
     if (vaapi_x11_untrap_errors())
       xprintf(this->xine, XINE_VERBOSITY_LOG, LOG_MODULE " vaapi_glx_unbind_texture : Failed to release?\n");
   }
 
-  mpglBindTexture(GL_TEXTURE_2D, 0);
+  this->mpglBindTexture (GL_TEXTURE_2D, 0);
   glDisable(GL_TEXTURE_2D);
   return 0;
 }
@@ -601,7 +596,7 @@ static void destroy_glx(vaapi_driver_t *this)
 
   if(this->gl_pixmap) {
     vaapi_x11_trap_errors();
-    mpglXDestroyPixmap(this->display, this->gl_pixmap);
+    this->mpglXDestroyPixmap (this->display, this->gl_pixmap);
     XSync(this->display, False);
     if (vaapi_x11_untrap_errors())
       xprintf(this->xine, XINE_VERBOSITY_LOG, LOG_MODULE " vaapi_destroy_glx : mpglXDestroyPixmap failed\n");
@@ -654,6 +649,7 @@ static GLXFBConfig *get_fbconfig_for_depth(vaapi_driver_t *this, int depth)
 
         visual_depth = vi->depth;
         XFree(vi);
+        vi = NULL;
 
         if (visual_depth != depth)
             continue;
@@ -713,7 +709,7 @@ static int vaapi_glx_config_tfp(vaapi_driver_t *this, unsigned int width, unsign
   int attribs[7], i = 0;
   const int depth = 24;
 
-  if (!mpglXBindTexImage || !mpglXReleaseTexImage) {
+  if (!this->mpglXBindTexImage || !this->mpglXReleaseTexImage) {
     xprintf(this->xine, XINE_VERBOSITY_LOG, LOG_MODULE " vaapi_glx_config_tfp : No GLX texture-from-pixmap extension available\n");
     return 0;
   }
@@ -747,7 +743,7 @@ static int vaapi_glx_config_tfp(vaapi_driver_t *this, unsigned int width, unsign
   attribs[i++] = None;
 
   vaapi_x11_trap_errors();
-  this->gl_pixmap = mpglXCreatePixmap(this->display, *fbconfig, this->gl_image_pixmap, attribs);
+  this->gl_pixmap = this->mpglXCreatePixmap(this->display, *fbconfig, this->gl_image_pixmap, attribs);
   XSync(this->display, False);
   if (vaapi_x11_untrap_errors()) {
     xprintf(this->xine, XINE_VERBOSITY_LOG, LOG_MODULE " vaapi_glx_config_tfp : Could not create GLX pixmap\n");
@@ -757,8 +753,7 @@ static int vaapi_glx_config_tfp(vaapi_driver_t *this, unsigned int width, unsign
   return 1;
 }
 
-static int vaapi_glx_config_glx(vaapi_driver_t *this, unsigned int width, unsigned int height)
-{
+static int vaapi_glx_config_glx (vaapi_driver_t *this, unsigned int width, unsigned int height) {
   ff_vaapi_context_t    *va_context = this->va_context;
   int                    gl_visual_attr[] = VAAPI_GLX_VISUAL_ATTR;
   XVisualInfo           *gl_vinfo;
@@ -769,102 +764,106 @@ static int vaapi_glx_config_glx(vaapi_driver_t *this, unsigned int width, unsign
     this->opengl_render = 0;
   }
 
-  glXMakeCurrent(this->display, None, NULL);
-  this->gl_context = glXCreateContext (this->display, gl_vinfo, NULL, True);
-  XFree(gl_vinfo);
-  if (this->gl_context) {
-    if(!glXMakeCurrent (this->display, this->window, this->gl_context)) {
-      xprintf(this->xine, XINE_VERBOSITY_LOG, LOG_MODULE " vaapi_glx_config_glx : error glXMakeCurrent\n");
-      goto error;
+  do {
+    void *(*getProcAddress) (const GLubyte *);
+    const char *(*glXExtStr) (Display *, int);
+    char *glxstr;
+    size_t slen;
+
+    glXMakeCurrent (this->display, None, NULL);
+    this->gl_context = glXCreateContext (this->display, gl_vinfo, NULL, True);
+    XFree (gl_vinfo);
+    gl_vinfo = NULL;
+    if (this->gl_context) {
+      if (!glXMakeCurrent (this->display, this->window, this->gl_context)) {
+        xprintf (this->xine, XINE_VERBOSITY_LOG, LOG_MODULE " vaapi_glx_config_glx : error glXMakeCurrent\n");
+        break;
+      }
+    } else {
+      xprintf (this->xine, XINE_VERBOSITY_LOG, LOG_MODULE " vaapi_glx_config_glx : error glXCreateContext\n");
+      break;
     }
-  } else {
-    xprintf(this->xine, XINE_VERBOSITY_LOG, LOG_MODULE " vaapi_glx_config_glx : error glXCreateContext\n");
-    goto error;
-  }
 
-  void *(*getProcAddress)(const GLubyte *);
-  const char *(*glXExtStr)(Display *, int);
-  char *glxstr = strdup(" ");
+    glxstr = strdup (" ");
+    slen = 0;
+    getProcAddress = vaapi_getdladdr ("glXGetProcAddress");
+    if (!getProcAddress)
+      getProcAddress = vaapi_getdladdr ("glXGetProcAddressARB");
+    glXExtStr = vaapi_getdladdr ("glXQueryExtensionsString");
+    if (glXExtStr)
+      vaapi_appendstr (&glxstr, &slen, glXExtStr (this->display, this->screen));
+    glXExtStr = vaapi_getdladdr ("glXGetClientString");
+    if (glXExtStr)
+      vaapi_appendstr (&glxstr, &slen, glXExtStr (this->display, GLX_EXTENSIONS));
+    glXExtStr = vaapi_getdladdr ("glXGetServerString");
+    if (glXExtStr)
+      vaapi_appendstr (&glxstr, &slen, glXExtStr(this->display, GLX_EXTENSIONS));
 
-  getProcAddress = vaapi_getdladdr("glXGetProcAddress");
-  if (!getProcAddress)
-    getProcAddress = vaapi_getdladdr("glXGetProcAddressARB");
-  glXExtStr = vaapi_getdladdr("glXQueryExtensionsString");
-  if (glXExtStr)
-      vaapi_appendstr(&glxstr, glXExtStr(this->display, this->screen));
-  glXExtStr = vaapi_getdladdr("glXGetClientString");
-  if (glXExtStr)
-      vaapi_appendstr(&glxstr, glXExtStr(this->display, GLX_EXTENSIONS));
-  glXExtStr = vaapi_getdladdr("glXGetServerString");
-  if (glXExtStr)
-      vaapi_appendstr(&glxstr, glXExtStr(this->display, GLX_EXTENSIONS));
+    vaapi_get_functions (this, getProcAddress, glxstr);
+    if (!this->mpglGenPrograms && this->mpglGetString && getProcAddress &&
+      strstr (this->mpglGetString (GL_EXTENSIONS), "GL_ARB_vertex_program")) {
+      xprintf (this->xine, XINE_VERBOSITY_LOG,
+        LOG_MODULE " vaapi_glx_config_glx : Broken glXGetProcAddress detected, trying workaround\n");
+      vaapi_get_functions (this, NULL, glxstr);
+    }
+    free (glxstr);
+    glxstr = NULL;
 
-  vaapi_get_functions(getProcAddress, glxstr);
-  if (!mpglGenPrograms && mpglGetString &&
-      getProcAddress &&
-      strstr(mpglGetString(GL_EXTENSIONS), "GL_ARB_vertex_program")) {
-    xprintf(this->xine, XINE_VERBOSITY_LOG, LOG_MODULE " vaapi_glx_config_glx : Broken glXGetProcAddress detected, trying workaround\n");
-    vaapi_get_functions(NULL, glxstr);
-  }
-  free(glxstr);
+    glDisable (GL_DEPTH_TEST);
+    glDepthMask (GL_FALSE);
+    glDisable (GL_CULL_FACE);
+    glEnable (GL_TEXTURE_2D);
+    glDrawBuffer (GL_BACK);
+    glTexEnvi (GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
+    glEnable (GL_BLEND);
+    glBlendFunc (GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
 
-  glDisable(GL_DEPTH_TEST);
-  glDepthMask(GL_FALSE);
-  glDisable(GL_CULL_FACE);
-  glEnable(GL_TEXTURE_2D);
-  glDrawBuffer(GL_BACK);
-  glTexEnvi(GL_TEXTURE_ENV, GL_TEXTURE_ENV_MODE, GL_MODULATE);
-  glEnable(GL_BLEND);
-  glBlendFunc(GL_SRC_ALPHA, GL_ONE_MINUS_SRC_ALPHA);
+    /* Create TFP resources */
+    if (this->opengl_use_tfp && vaapi_glx_config_tfp (this, width, height)) {
+      xprintf (this->xine, XINE_VERBOSITY_LOG, LOG_MODULE " vaapi_glx_config_glx : Using GLX texture-from-pixmap extension\n");
+    } else {
+      this->opengl_use_tfp = 0;
+    }
 
-  /* Create TFP resources */
-  if(this->opengl_use_tfp && vaapi_glx_config_tfp(this, width, height)) {
-    xprintf(this->xine, XINE_VERBOSITY_LOG, LOG_MODULE " vaapi_glx_config_glx : Using GLX texture-from-pixmap extension\n");
-  } else {
-    this->opengl_use_tfp = 0;
-  }
+    /* Create OpenGL texture */
+    /* XXX: assume GL_ARB_texture_non_power_of_two is available */
+    glEnable (GL_TEXTURE_2D);
+    glGenTextures (1, &this->gl_texture);
+    this->mpglBindTexture (GL_TEXTURE_2D, this->gl_texture);
+    glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    if (!this->opengl_use_tfp) {
+      glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+      glTexParameteri (GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+      glPixelStorei (GL_UNPACK_ALIGNMENT, 4);
+      glTexImage2D (GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0, GL_BGRA, GL_UNSIGNED_BYTE, NULL);
+    }
+    this->mpglBindTexture (GL_TEXTURE_2D, 0);
+    glDisable (GL_TEXTURE_2D);
 
-  /* Create OpenGL texture */
-  /* XXX: assume GL_ARB_texture_non_power_of_two is available */
-  glEnable(GL_TEXTURE_2D);
-  glGenTextures(1, &this->gl_texture);
-  mpglBindTexture(GL_TEXTURE_2D, this->gl_texture);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-  glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-  if (!this->opengl_use_tfp) {
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    glPixelStorei(GL_UNPACK_ALIGNMENT, 4);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGBA, width, height, 0,
-                 GL_BGRA, GL_UNSIGNED_BYTE, NULL);
-  }
-  mpglBindTexture(GL_TEXTURE_2D, 0);
-  glDisable(GL_TEXTURE_2D);
+    glClearColor (0.0, 0.0, 0.0, 1.0);
+    glClear (GL_COLOR_BUFFER_BIT);
 
-  glClearColor(0.0, 0.0, 0.0, 1.0);
-  glClear(GL_COLOR_BUFFER_BIT);
+    if (!this->gl_texture) {
+      xprintf (this->xine, XINE_VERBOSITY_LOG, LOG_MODULE " vaapi_glx_config_glx : gl_texture NULL\n");
+      break;
+    }
 
-  if(!this->gl_texture) {
-    xprintf(this->xine, XINE_VERBOSITY_LOG, LOG_MODULE " vaapi_glx_config_glx : gl_texture NULL\n");
-    goto error;
-  }
-
-  if(!this->opengl_use_tfp) {
-    VAStatus vaStatus = vaCreateSurfaceGLX(va_context->va_display, GL_TEXTURE_2D, this->gl_texture, &this->gl_surface);
-    if(!vaapi_check_status(this, vaStatus, "vaCreateSurfaceGLX()")) {
+    if (!this->opengl_use_tfp) {
+      VAStatus vaStatus = vaCreateSurfaceGLX (va_context->va_display, GL_TEXTURE_2D, this->gl_texture, &this->gl_surface);
+      if (!vaapi_check_status (this, vaStatus, "vaCreateSurfaceGLX()")) {
+        this->gl_surface = NULL;
+        break;
+      }
+    } else {
       this->gl_surface = NULL;
-      goto error;
     }
-  } else {
-    this->gl_surface = NULL;
-  }
 
-  lprintf("vaapi_glx_config_glx : GL setup done\n");
+    lprintf ("vaapi_glx_config_glx : GL setup done\n");
+    return 1;
+  } while (0);
 
-  return 1;
-
-error:
-  destroy_glx(this);
+  destroy_glx (this);
   return 0;
 }
 
@@ -889,8 +888,8 @@ static void vaapi_init_subpicture(vaapi_driver_t *this) {
   this->overlay_bitmap = NULL;
   this->overlay_bitmap_size = 0;
 
-  this->va_subpic_formats     = NULL;
-  this->va_num_subpic_formats = 0;
+  this->bgra_subpic_format.fourcc = 0;
+  this->bgra_subpic_flags = 0;
 }
 
 /* Close vaapi  */
@@ -932,58 +931,51 @@ static void vaapi_destroy_subpicture(vaapi_driver_t *this) {
 
 /* Create VAAPI subpicture */
 static VAStatus vaapi_create_subpicture(vaapi_driver_t *this, int width, int height) {
-  ff_vaapi_context_t  *va_context = this->va_context;
-  VAStatus            vaStatus;
+  do {
+    ff_vaapi_context_t *va_context = this->va_context;
+    void *p_base = NULL;
+    VAStatus vaStatus;
 
-  int i = 0;
+    if (!va_context->valid_context || !this->bgra_subpic_format.fourcc)
+      return VA_STATUS_ERROR_UNKNOWN;
 
-  if(!va_context->valid_context || !this->va_subpic_formats || this->va_num_subpic_formats == 0)
-    return VA_STATUS_ERROR_UNKNOWN;
+    vaStatus = vaCreateImage (va_context->va_display, &this->bgra_subpic_format, width, height, &this->va_subpic_image);
+    if (!vaapi_check_status (this, vaStatus, "vaCreateImage()"))
+      break;
 
-  for (i = 0; i < this->va_num_subpic_formats; i++) {
-    if ( this->va_subpic_formats[i].fourcc == VA_FOURCC('B','G','R','A')) {
+    vaStatus = vaCreateSubpicture (va_context->va_display, this->va_subpic_image.image_id, &this->va_subpic_id);
+    if (!vaapi_check_status (this, vaStatus, "vaCreateSubpicture()"))
+      break;
 
-      vaStatus = vaCreateImage( va_context->va_display, &this->va_subpic_formats[i], width, height, &this->va_subpic_image );
-      if(!vaapi_check_status(this, vaStatus, "vaCreateImage()"))
-        goto error;
+    if ((this->va_subpic_image.image_id == VA_INVALID_ID) || (this->va_subpic_id == VA_INVALID_ID))
+      break;
 
-      vaStatus = vaCreateSubpicture(va_context->va_display, this->va_subpic_image.image_id, &this->va_subpic_id );
-      if(!vaapi_check_status(this, vaStatus, "vaCreateSubpicture()"))
-        goto error;
-    }
-  }
-
-  if (this->va_subpic_image.image_id == VA_INVALID_ID || this->va_subpic_id == VA_INVALID_ID)
-    goto error;
-
-  void *p_base = NULL;
-
-  lprintf("create sub 0x%08x 0x%08x 0x%08x\n", this->va_subpic_id,
+    lprintf ("create sub 0x%08x 0x%08x 0x%08x\n", this->va_subpic_id,
       this->va_subpic_image.image_id, this->va_subpic_image.buf);
 
-  vaStatus = vaMapBuffer(va_context->va_display, this->va_subpic_image.buf, &p_base);
-  if(!vaapi_check_status(this, vaStatus, "vaMapBuffer()"))
-    goto error;
+    vaStatus = vaMapBuffer(va_context->va_display, this->va_subpic_image.buf, &p_base);
+    if (!vaapi_check_status(this, vaStatus, "vaMapBuffer()"))
+      break;
 
-  memset((uint32_t *)p_base, 0x0, this->va_subpic_image.data_size);
-  vaStatus = vaUnmapBuffer(va_context->va_display, this->va_subpic_image.buf);
-  vaapi_check_status(this, vaStatus, "vaUnmapBuffer()");
+    memset ((uint32_t *)p_base, 0x0, this->va_subpic_image.data_size);
+    vaStatus = vaUnmapBuffer(va_context->va_display, this->va_subpic_image.buf);
+    vaapi_check_status (this, vaStatus, "vaUnmapBuffer()");
 
-  this->overlay_output_width  = width;
-  this->overlay_output_height = height;
+    this->overlay_output_width  = width;
+    this->overlay_output_height = height;
 
-  lprintf("vaapi_create_subpicture 0x%08x format %s\n", this->va_subpic_image.image_id,
+    lprintf ("vaapi_create_subpicture 0x%08x format %s\n", this->va_subpic_image.image_id,
       string_of_VAImageFormat(&this->va_subpic_image.format));
 
-  return VA_STATUS_SUCCESS;
+    return VA_STATUS_SUCCESS;
+  } while (0);
 
-error:
   /* house keeping */
-  if(this->va_subpic_id != VA_INVALID_ID)
+  if (this->va_subpic_id != VA_INVALID_ID)
     vaapi_destroy_subpicture(this);
   this->va_subpic_id = VA_INVALID_ID;
 
-  _x_va_destroy_image(this->va, &this->va_subpic_image);
+  _x_va_destroy_image (this->va, &this->va_subpic_image);
 
   this->overlay_output_width  = 0;
   this->overlay_output_height = 0;
@@ -1308,6 +1300,7 @@ static void vaapi_display_attribs(vaapi_driver_t *this) {
       }
     }
     free(display_attrs);
+    display_attrs = NULL;
   }
 
   if (this->have_user_csc_matrix) {
@@ -1385,45 +1378,49 @@ static VAStatus vaapi_destroy_soft_surfaces(vaapi_driver_t *this) {
 }
 
 static VAStatus vaapi_init_soft_surfaces(vaapi_driver_t *this, int width, int height) {
-  ff_vaapi_context_t  *va_context = this->va_context;
-  VAStatus            vaStatus;
-  int                 i;
-
   vaapi_destroy_soft_surfaces(this);
 
-  vaStatus = vaCreateSurfaces(va_context->va_display, VA_RT_FORMAT_YUV420, width, height, this->va_soft_surface_ids, SOFT_SURFACES, NULL, 0);
-  if(!vaapi_check_status(this, vaStatus, "vaCreateSurfaces()"))
-    goto error;
+  do {
+    ff_vaapi_context_t *va_context = this->va_context;
+    VAStatus vaStatus;
+    int i;
 
-  /* allocate software surfaces */
-  for(i = 0; i < SOFT_SURFACES; i++) {
+    vaStatus = vaCreateSurfaces (va_context->va_display,
+      VA_RT_FORMAT_YUV420, width, height, this->va_soft_surface_ids, SOFT_SURFACES, NULL, 0);
+    if (!vaapi_check_status (this, vaStatus, "vaCreateSurfaces()"))
+      break;
 
-    vaStatus = _x_va_create_image(this->va, this->va_soft_surface_ids[i], &this->va_soft_images[i], width, height, 1, &this->soft_image_is_bound);
-    if (!vaapi_check_status(this, vaStatus, "_x_va_create_image()")) {
-      this->va_soft_images[i].image_id = VA_INVALID_ID;
-      goto error;
-    }
-
-    if (!this->soft_image_is_bound) {
-      vaStatus = vaPutImage(va_context->va_display, this->va_soft_surface_ids[i], this->va_soft_images[i].image_id,
-               0, 0, this->va_soft_images[i].width, this->va_soft_images[i].height,
-               0, 0, this->va_soft_images[i].width, this->va_soft_images[i].height);
-      vaapi_check_status(this, vaStatus, "vaPutImage()");
-    }
+    /* allocate software surfaces */
+    for (i = 0; i < SOFT_SURFACES; i++) {
+      vaStatus = _x_va_create_image (this->va,
+        this->va_soft_surface_ids[i], &this->va_soft_images[i], width, height, 1, &this->soft_image_is_bound);
+      if (!vaapi_check_status(this, vaStatus, "_x_va_create_image()")) {
+        this->va_soft_images[i].image_id = VA_INVALID_ID;
+        break;
+      }
+      if (!this->soft_image_is_bound) {
+        vaStatus = vaPutImage (va_context->va_display,
+          this->va_soft_surface_ids[i], this->va_soft_images[i].image_id,
+          0, 0, this->va_soft_images[i].width, this->va_soft_images[i].height,
+          0, 0, this->va_soft_images[i].width, this->va_soft_images[i].height);
+        vaapi_check_status (this, vaStatus, "vaPutImage()");
+      }
 #ifdef DEBUG_SURFACE
-    printf("vaapi_init_soft_surfaces 0x%08x\n", this->va_soft_surface_ids[i]);
+      printf("vaapi_init_soft_surfaces 0x%08x\n", this->va_soft_surface_ids[i]);
 #endif
-  }
+    }
+    if (i < SOFT_SURFACES)
+      break;
 
-  this->sw_width  = width;
-  this->sw_height = height;
-  this->va_soft_head = 0;
-  return VA_STATUS_SUCCESS;
+    this->sw_width  = width;
+    this->sw_height = height;
+    this->va_soft_head = 0;
+    return VA_STATUS_SUCCESS;
+  } while (0);
 
-error:
   this->sw_width  = 0;
   this->sw_height = 0;
-  vaapi_destroy_soft_surfaces(this);
+  vaapi_destroy_soft_surfaces (this);
   return VA_STATUS_ERROR_UNKNOWN;
 }
 
@@ -1581,7 +1578,7 @@ static int vaapi_ovl_associate(vaapi_driver_t *this, int format, int bShow) {
   ff_vaapi_context_t  *va_context = this->va_context;
   VAStatus vaStatus;
 
-  if(!va_context->valid_context)
+  if (!va_context->valid_context)
     return 0;
 
   if (this->last_sub_image_fmt && !bShow) {
@@ -2647,9 +2644,6 @@ static void vaapi_dispose_locked (vaapi_driver_t *this) {
 
   UNLOCK_DISPLAY (this);
 
-  _x_freep(&this->va_subpic_formats);
-  this->va_num_subpic_formats = 0;
-
   pthread_mutex_unlock(&this->vaapi_lock);
   pthread_mutex_destroy(&this->vaapi_lock);
 
@@ -2784,7 +2778,6 @@ static int vaapi_init_x11(vaapi_driver_t *this)
 static int vaapi_initialize(vaapi_driver_t *this, int visual_type, const void *visual)
 {
   VAStatus vaStatus;
-  int fmt_count = 0;
   unsigned interop_flags = XINE_VA_DISPLAY_X11;
 
 #ifdef ENABLE_VA_GLX
@@ -2820,12 +2813,62 @@ static int vaapi_initialize(vaapi_driver_t *this, int visual_type, const void *v
   vaapi_set_background_color(this);
   vaapi_display_attribs(this);
 
-  fmt_count = vaMaxNumSubpictureFormats( this->va_context->va_display );
-  this->va_subpic_formats = calloc( fmt_count, sizeof(*this->va_subpic_formats) );
+  if (this->overlay_mode == 1) {
+    VAImageFormat *va_subpic_formats = NULL;
+    unsigned int *va_subpic_flags = NULL;
+    int fmt_count = vaMaxNumSubpictureFormats (this->va_context->va_display);
 
-  vaStatus = vaQuerySubpictureFormats( this->va_context->va_display, this->va_subpic_formats, 0, &this->va_num_subpic_formats );
-  if(!vaapi_check_status(this, vaStatus, "vaQuerySubpictureFormats()"))
-    return 0;
+    if ((unsigned int)(fmt_count - 1) < 256) {
+      va_subpic_formats = calloc (fmt_count, sizeof (*va_subpic_formats));
+      va_subpic_flags = calloc (fmt_count, sizeof (*va_subpic_flags));
+      /* FIXME: the mesa radeonsi driver has a severe overlay bug.
+       * for vdpau, we got a usable workaround (see video_out_vdpau.c).
+       * for vaapi, glx mode should be 1 2.
+       * in any case, treat missing overlays as non fatal. */
+      vaStatus = vaQuerySubpictureFormats (this->va_context->va_display,
+        va_subpic_formats, va_subpic_flags, &fmt_count);
+      if (!vaapi_check_status (this, vaStatus, "vaQuerySubpictureFormats()"))
+        fmt_count = 0;
+    }
+
+    if ((unsigned int)(fmt_count - 1) < 256) {
+      char buf[256 * 22], *q = buf;
+      int i;
+      for (i = 0; i < fmt_count; i++) {
+        *q++ = ' ';
+        q += _x_tag32_me2str (q, va_subpic_formats[i].fourcc);
+        if (va_subpic_formats[i].fourcc == VA_FOURCC ('B', 'G', 'R', 'A')) {
+          this->bgra_subpic_format = va_subpic_formats[i];
+          this->bgra_subpic_flags = va_subpic_flags[i];
+        }
+      }
+      *q = 0;
+      xprintf (this->xine, XINE_VERBOSITY_LOG, LOG_MODULE " vaapi_open: subpicture formats: %s.\n", buf);
+    } else {
+      /* this->overlay_mode = 0;
+       * this->xine->config->update_num (this->xine->config, "video.output.vaapi_overlay_mode", 0); */
+      xprintf (this->xine, XINE_VERBOSITY_LOG,
+        LOG_MODULE " vaapi_open: bogus subpicture format count %d, overlays disabled.\n", fmt_count);
+    }
+
+    free (va_subpic_flags);
+    free (va_subpic_formats);
+  } else if (this->overlay_mode == 2) {
+    /* DEBUG only. */
+    this->bgra_subpic_format.fourcc = VA_FOURCC ('B', 'G', 'R', 'A');
+    this->bgra_subpic_format.byte_order = 1;
+    this->bgra_subpic_format.bits_per_pixel = 32;
+    this->bgra_subpic_format.depth = 32;
+    this->bgra_subpic_format.red_mask = 0x00ff0000;
+    this->bgra_subpic_format.green_mask = 0x0000ff00;
+    this->bgra_subpic_format.blue_mask = 0x000000ff;
+    this->bgra_subpic_format.alpha_mask = 0xff000000;
+    this->bgra_subpic_flags = 0;
+    xprintf (this->xine, XINE_VERBOSITY_LOG,
+      LOG_MODULE " vaapi_open: warning: forcing BGRA overlays, this may crash.\n");
+  } else {
+    xprintf (this->xine, XINE_VERBOSITY_LOG, LOG_MODULE " vaapi_open: overlays disabled manually.\n");
+  }
 
   if(vaapi_init_internal(this, SW_CONTEXT_INIT_FORMAT, SW_WIDTH, SW_HEIGHT) != VA_STATUS_SUCCESS)
     return 0;
@@ -3003,6 +3046,15 @@ static vo_driver_t *vaapi_open_plugin (video_driver_class_t *class_gen, const vo
     vaapi_csc_mode, this);
   vaapi_set_csc_mode (this, this->csc_mode);
 
+  this->overlay_mode = this->xine->config->register_range (this->xine->config,
+    "video.output.vaapi_overlay_mode", 1, 0, 2,
+    _("VAAPI overlay mode"),
+    _("How to display onscreen messages and subtitles:\n"
+      "0: Disable overlays for broken driver (eg Mesa radeonsi),\n"
+      "1: Auto.\n"
+      "2: Force BGRA.\n"),
+    10, NULL, NULL);
+
   xprintf(this->xine, XINE_VERBOSITY_LOG, LOG_MODULE " vaapi_open: Deinterlace : %d\n", this->deinterlace);
   xprintf(this->xine, XINE_VERBOSITY_LOG, LOG_MODULE " vaapi_open: Render surfaces : %d\n", RENDER_SURFACES);
 #ifdef ENABLE_VA_GLX
@@ -3056,4 +3108,3 @@ const plugin_info_t xine_plugin_info[] EXPORTED = {
   { PLUGIN_VIDEO_OUT, 22, "vaapi", XINE_VERSION_CODE, &vo_info_vaapi, vaapi_init_class },
   { PLUGIN_NONE, 0, NULL, 0, NULL, NULL }
 };
-

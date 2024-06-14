@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2000-2021 the xine project
+ * Copyright (C) 2000-2022 the xine project
  *
  * This file is part of xine, a free video player.
  *
@@ -219,7 +219,7 @@ void _x_flush_events_queues (xine_stream_t *stream) XINE_PROTECTED;
 /* extra_info operations */
 void _x_extra_info_reset( extra_info_t *extra_info ) XINE_PROTECTED;
 
-void _x_extra_info_merge( extra_info_t *dst, extra_info_t *src ) XINE_PROTECTED;
+void _x_extra_info_merge (extra_info_t *dst, const extra_info_t *src) XINE_PROTECTED;
 
 void _x_get_current_info (xine_stream_t *stream, extra_info_t *extra_info, int size) XINE_PROTECTED;
 
@@ -263,6 +263,7 @@ int _x_demux_start_thread          (xine_stream_t *stream) XINE_PROTECTED;
 int _x_demux_called_from           (xine_stream_t *stream) XINE_PROTECTED;
 int _x_demux_stop_thread           (xine_stream_t *stream) XINE_PROTECTED;
 int _x_demux_read_header           (input_plugin_t *input, void *buffer, off_t size) XINE_PROTECTED;
+int _x_demux_read_stream_header    (xine_stream_t *stream, input_plugin_t *input, void *buffer, size_t size) XINE_PROTECTED;
 int _x_demux_check_extension       (const char *mrl, const char *extensions);
 
 off_t _x_read_abort (xine_stream_t *stream, int fd, char *buf, off_t todo) XINE_PROTECTED;
@@ -392,3 +393,4 @@ typedef struct {
 #endif
 
 #endif
+

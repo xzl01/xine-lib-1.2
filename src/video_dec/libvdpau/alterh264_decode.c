@@ -1,5 +1,5 @@
 /* kate: space-indent on; indent-width 2; mixedindent off; indent-mode cstyle; remove-trailing-space on;
- * Copyright (C) 2008-2021 the xine project
+ * Copyright (C) 2008-2023 the xine project
  * Copyright (C) 2008 Christophe Thommeret <hftom@free.fr>
  *
  * This file is part of xine, a free video player.
@@ -53,8 +53,6 @@ typedef struct {
 
   vdec_hw_h264_t *vdec;
 
-  vdpau_accel_t *accel;
-
   VdpDecoderProfile profile;
   vdpau_accel_t *accel_vdpau;
   VdpDecoder decoder;
@@ -64,6 +62,7 @@ typedef struct {
   int decoder_width;
   int decoder_height;
 
+  int safe_seek;
   int seek;
 
   double reported_ratio;
@@ -87,7 +86,7 @@ static __attribute__((format (printf, 3, 4))) int vdpau_h264_alter_logg (void *u
          : level == VDEC_HW_H264_LOGG_INFO ? XINE_VERBOSITY_DEBUG
          : /* VDEC_HW_H264_LOGG_DEBUG */ XINE_VERBOSITY_DEBUG + 1;
 
-  if (l2 >= this->stream->xine->verbosity) {
+  if (l2 <= this->stream->xine->verbosity) {
     va_list va;
 
     va_start (va, fmt);
@@ -118,13 +117,85 @@ static int vdpau_h264_alter_frame_new (void *user_data, vdec_hw_h264_frame_t *fr
   img->pts = frame->pts;
   img->duration = frame->duration;
   img->progressive_frame = frame->progressive_frame;
-  img->bad_frame = frame->bad_frame;
+  /* try to view small errors as well. */
+  img->bad_frame = frame->bad_frame > 1;
   this->used += 1;
   if (this->used > 19) {
     xprintf (this->stream->xine, XINE_VERBOSITY_LOG,
       LOG_MODULE ": WARNING: too many frames (%d).\n", this->used);
   }
   return 1;
+}
+
+static int vdpau_h264_alter_int_reset (vdpau_h264_alter_decoder_t *this) {
+  /** vdpau.h says that a ref frame
+   *  - starts being usable when it is decoded, and
+   *  - stops when it is no longer mentioned in a decode call.
+   *  lets try to misuse that for a internal reset here ;-) */
+  VdpPictureInfoH264 info;
+  VdpStatus st;
+
+  info.slice_count                            = 0;
+  info.field_order_cnt[0]                     = 0;
+  info.field_order_cnt[1]                     = 0;
+  info.is_reference                           = VDP_FALSE;
+  info.frame_num                              = 0;
+  info.field_pic_flag                         = 0;
+  info.bottom_field_flag                      = 0;
+  info.num_ref_frames                         = 0;
+  info.mb_adaptive_frame_field_flag           = 0;
+  info.constrained_intra_pred_flag            = 0;
+  info.weighted_pred_flag                     = 0;
+  info.weighted_bipred_idc                    = 0;
+  info.frame_mbs_only_flag                    = 0;
+  info.transform_8x8_mode_flag                = 0;
+  info.chroma_qp_index_offset                 = 0;
+  info.second_chroma_qp_index_offset          = 0;
+  info.pic_init_qp_minus26                    = 0;
+  info.num_ref_idx_l0_active_minus1           = 0;
+  info.num_ref_idx_l1_active_minus1           = 0;
+  info.log2_max_frame_num_minus4              = 0;
+  info.pic_order_cnt_type                     = 0;
+  info.log2_max_pic_order_cnt_lsb_minus4      = 0;
+  info.delta_pic_order_always_zero_flag       = 0;
+  info.direct_8x8_inference_flag              = 0;
+  info.entropy_coding_mode_flag               = 0;
+  info.pic_order_present_flag                 = 0;
+  info.deblocking_filter_control_present_flag = 0;
+  info.redundant_pic_cnt_present_flag         = 0;
+
+  memset (info.scaling_lists_4x4, 0, sizeof (info.scaling_lists_4x4));
+  memset (info.scaling_lists_8x8, 0, sizeof (info.scaling_lists_8x8));
+
+  {
+    uint32_t u;
+
+    for (u = 0; u < sizeof (info.referenceFrames) / sizeof (info.referenceFrames[0]); u++) {
+      info.referenceFrames[u].surface = VDP_INVALID_HANDLE;
+      info.referenceFrames[u].is_long_term = 0;
+      info.referenceFrames[u].frame_idx = 0;
+      info.referenceFrames[u].top_is_reference = VDP_FALSE;
+      info.referenceFrames[u].bottom_is_reference = VDP_FALSE;
+      info.referenceFrames[u].field_order_cnt[0] = 0;
+      info.referenceFrames[u].field_order_cnt[1] = 0;
+    }
+  }
+
+  {
+    VdpBitstreamBuffer vbits = {
+      .struct_version = VDP_BITSTREAM_BUFFER_VERSION,
+      .bitstream = NULL,
+      .bitstream_bytes = 0,
+    };
+    if (this->accel_vdpau->lock)
+      this->accel_vdpau->lock (this->accel_vdpau->vo_frame);
+    st = this->accel_vdpau->vdp_decoder_render (this->decoder, VDP_INVALID_HANDLE,
+      CAST_VdpPictureInfo_PTR &info, 1, &vbits);
+    if (this->accel_vdpau->lock)
+      this->accel_vdpau->unlock (this->accel_vdpau->vo_frame);
+  }
+
+  return st == VDP_STATUS_OK;
 }
 
 static int vdpau_h264_alter_frame_render (void *user_data, vdec_hw_h264_frame_t *frame) {
@@ -154,6 +225,7 @@ static int vdpau_h264_alter_frame_render (void *user_data, vdec_hw_h264_frame_t 
     if (this->decoder != VDP_INVALID_HANDLE) {
       accel->vdp_decoder_destroy (this->decoder);
       this->decoder = VDP_INVALID_HANDLE;
+      xprintf (this->stream->xine, XINE_VERBOSITY_DEBUG, LOG_MODULE ": closed decoder.\n");
     }
     st = accel->vdp_decoder_create (accel->vdp_device, profile,
         frame->width, frame->height, frame->num_ref_frames, &this->decoder);
@@ -281,7 +353,7 @@ static int vdpau_h264_alter_frame_render (void *user_data, vdec_hw_h264_frame_t 
     data.aspect = frame->ratio;
     xine_event_send (this->stream, &event);
   }
-  return 1;
+  return st == VDP_STATUS_OK;
 }
 
 static int vdpau_h264_alter_frame_ready (void *user_data, vdec_hw_h264_frame_t *frame) {
@@ -387,9 +459,28 @@ static void vdpau_h264_alter_flush (video_decoder_t *this_gen) {
 static void vdpau_h264_alter_reset (video_decoder_t *this_gen) {
   vdpau_h264_alter_decoder_t *this = (vdpau_h264_alter_decoder_t *) this_gen;
 
-  lprintf ("vdpau_h264_alter_reset\n");
+  xprintf (this->stream->xine, XINE_VERBOSITY_DEBUG, LOG_MODULE ": reset.\n");
+
+  /* TJ. nvidia_bin works fine without this, buf newer radeonsi crashes
+   * on vdp_video_mixer_render () of first new frame (or filler frame,
+   * who knows - i cannot test that myself). */
+  if ((this->decoder != VDP_INVALID_HANDLE) && this->accel_vdpau) {
+    if (this->safe_seek) {
+      if (this->accel_vdpau->lock)
+        this->accel_vdpau->lock (this->accel_vdpau->vo_frame);
+      this->accel_vdpau->vdp_decoder_destroy (this->decoder);
+      this->decoder = VDP_INVALID_HANDLE;
+      if (this->accel_vdpau->unlock)
+        this->accel_vdpau->unlock (this->accel_vdpau->vo_frame);
+      xprintf (this->stream->xine, XINE_VERBOSITY_DEBUG, LOG_MODULE ": closed decoder.\n");
+    } else {
+      vdpau_h264_alter_int_reset (this);
+      xprintf (this->stream->xine, XINE_VERBOSITY_DEBUG, LOG_MODULE ": reset decoder.\n");
+    }
+  }
 
   vdec_hw_h264_reset (this->vdec);
+
   this->seek = 1;
 }
 
@@ -412,6 +503,8 @@ static void vdpau_h264_alter_dispose (video_decoder_t *this_gen) {
 
   lprintf ("vdpau_h264_alter_dispose\n");
 
+  this->stream->xine->config->unregister_callbacks (this->stream->xine->config, NULL, NULL, this, sizeof (*this));
+
   vdec_hw_h264_delete (&this->vdec);
 
   if ((this->decoder != VDP_INVALID_HANDLE) && this->accel_vdpau) {
@@ -421,6 +514,7 @@ static void vdpau_h264_alter_dispose (video_decoder_t *this_gen) {
     this->decoder = VDP_INVALID_HANDLE;
     if (this->accel_vdpau->unlock)
       this->accel_vdpau->unlock (this->accel_vdpau->vo_frame);
+    xprintf (this->stream->xine, XINE_VERBOSITY_DEBUG, LOG_MODULE ": closed decoder.\n");
   }
 
   this->stream->video_out->close (this->stream->video_out, this->stream);
@@ -428,7 +522,12 @@ static void vdpau_h264_alter_dispose (video_decoder_t *this_gen) {
   free (this_gen);
 }
 
+static void vdpau_h264_alter_safe_seek (void *this_gen, xine_cfg_entry_t *entry) {
+  vdpau_h264_alter_decoder_t *this = (vdpau_h264_alter_decoder_t *)this_gen;
 
+  this->safe_seek = entry->num_value;
+}
+  
 /*
  * This function allocates, initializes, and returns a private video
  * decoder structure.
@@ -490,6 +589,12 @@ static video_decoder_t *open_plugin (video_decoder_class_t *class_gen, xine_stre
   this->stream = stream;
   this->vdec = vdec;
 
+  this->safe_seek = this->stream->xine->config->register_bool (this->stream->xine->config,
+    "video.processing.vdpau_seek_with_new_decoder", 1,
+    _("vdpau: reopen decoder on seek"),
+    _("Some drivers crash without this."),
+    10, vdpau_h264_alter_safe_seek, this);
+
   this->vdp_runtime_nr = runtime_nr;
   this->reported_ratio = 0.0;
   this->reported_video_step = 0;
@@ -518,7 +623,7 @@ void *h264_alter_init_plugin (xine_t * xine, const void *data) {
     .identifier  = "vdpau_h264_alter",
     .description =
       N_
-      ("vdpau_h264_alter: H264 decoder plugin using VDPAU hardware decoding.\n"
+      ("Alternative H264 decoder plugin using VDPAU hardware decoding.\n"
        "Must be used along with video_out_vdpau."),
     .dispose = NULL,
   };
@@ -527,4 +632,3 @@ void *h264_alter_init_plugin (xine_t * xine, const void *data) {
   (void)data;
   return (void *)&decode_video_vdpau_h264_alter_class;
 }
-

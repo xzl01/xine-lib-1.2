@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2017-2019 the xine project
+ * Copyright (C) 2017-2023 the xine project
  *
  * This file is part of xine, a free video player.
  *
@@ -69,8 +69,13 @@ static void hevc_decode_data (video_decoder_t *this_gen, buf_element_t *buf)
 
   /* collect data */
   if (this->size + buf->size > this->bufsize) {
-    this->bufsize = this->size + 2 * buf->size;
-    this->buf = realloc (this->buf, this->bufsize);
+    int newsize = this->size + 2 * buf->size;
+    void *tmp;
+    tmp = realloc (this->buf, newsize);
+    if (!tmp)
+      return;
+    this->buf = tmp;
+    this->bufsize = newsize;
   }
   xine_fast_memcpy (&this->buf[this->size], buf->content, buf->size);
   this->size += buf->size;
@@ -192,6 +197,7 @@ static void hevc_dispose (video_decoder_t *this_gen)
 
   libOpenHevcClose(this->handle);
 
+  _x_freep (&this->buf);
   free (this_gen);
 }
 

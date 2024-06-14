@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2000-2021 the xine project
+ * Copyright (C) 2000-2023 the xine project
  *
  * This file is part of xine, a free video player.
  *
@@ -934,6 +934,7 @@ static void handle_sub_ssa (demux_plugin_t *this_gen, matroska_track_t *track,
                             uint8_t *data, size_t data_len,
                             int64_t data_pts, int data_duration,
                             int input_normpos, int input_time) {
+  demux_matroska_t *this = (demux_matroska_t *) this_gen;
   buf_element_t *buf;
   uint32_t *val;
   int commas = 0;
@@ -944,7 +945,6 @@ static void handle_sub_ssa (demux_plugin_t *this_gen, matroska_track_t *track,
   int skip = 0;
 
   lprintf ("pts: %" PRId64 ", duration: %d\n", data_pts, data_duration);
-  (void)this_gen;
 
   /* skip ',' */
   while (data_len && (commas < 8)) {
@@ -1001,6 +1001,7 @@ static void handle_sub_ssa (demux_plugin_t *this_gen, matroska_track_t *track,
     buf->size = dest - (char *)buf->content;
     buf->extra_info->input_normpos = input_normpos;
     buf->extra_info->input_time    = input_time;
+    buf->extra_info->total_time    = this->duration;
 
     track->fifo->put(track->fifo, buf);
   } else {
@@ -1042,6 +1043,7 @@ static void handle_sub_utf8 (demux_plugin_t *this_gen, matroska_track_t *track,
     lprintf("sub: %s\n", buf->content + 8);
     buf->extra_info->input_normpos = input_normpos;
     buf->extra_info->input_time    = input_time;
+    buf->extra_info->total_time    = this->duration;
     track->fifo->put(track->fifo, buf);
   } else {
     xprintf(this->stream->xine, XINE_VERBOSITY_LOG,
@@ -1262,6 +1264,7 @@ static void handle_vobsub (demux_plugin_t *this_gen, matroska_track_t *track,
 
     buf->extra_info->input_normpos = input_normpos;
     buf->extra_info->input_time    = input_time;
+    buf->extra_info->total_time    = this->duration;
 
     buf->pts = data_pts;
     track->fifo->put(track->fifo, buf);
@@ -1538,6 +1541,8 @@ static int parse_track_entry(demux_matroska_t *this, matroska_track_t *track) {
         if (track->video_track)
           return 1;
         track->video_track = (matroska_video_track_t *)calloc(1, sizeof(matroska_video_track_t));
+        if (!track->video_track)
+          return 0;
         if (!ebml_read_master (ebml, &elem))
           return 0;
         if ((elem.len > 0) && !parse_video_track(this, track->video_track))
@@ -1549,6 +1554,8 @@ static int parse_track_entry(demux_matroska_t *this, matroska_track_t *track) {
         if (track->audio_track)
           return 1;
         track->audio_track = (matroska_audio_track_t *)calloc(1, sizeof(matroska_audio_track_t));
+        if (!track->audio_track)
+          return 0;
         if (!ebml_read_master (ebml, &elem))
           return 0;
         if ((elem.len > 0) && !parse_audio_track(this, track->audio_track))
@@ -1912,6 +1919,8 @@ static int parse_tracks(demux_matroska_t *this) {
 
         /* alloc and initialize a track with 0 */
         track = calloc(1, sizeof(matroska_track_t));
+        if (!track)
+          return 0;
         track->compress_algo = MATROSKA_COMPRESS_NONE;
         this->tracks[this->num_tracks] = track;
 

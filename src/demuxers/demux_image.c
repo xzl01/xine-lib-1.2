@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2003-2019 the xine project
+ * Copyright (C) 2003-2023 the xine project
  *
  * This file is part of xine, a free video player.
  *
@@ -140,6 +140,7 @@ static void demux_image_send_headers (demux_plugin_t *this_gen) {
 
   this->status = DEMUX_OK;
 
+  _x_stream_info_set (this->stream, XINE_STREAM_INFO_VIDEO_HAS_STILL, 1);
   _x_stream_info_set(this->stream, XINE_STREAM_INFO_HAS_VIDEO, 1);
   _x_stream_info_set(this->stream, XINE_STREAM_INFO_HAS_AUDIO, 0);
 }

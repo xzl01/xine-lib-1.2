@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2000-2020 the xine project
+ * Copyright (C) 2000-2023 the xine project
  *
  * This file is part of xine, a free video player.
  *
@@ -114,15 +114,17 @@ int _x_spu_decoder_sleep (xine_stream_t *s, int64_t next_spu_vpts) {
 
 static void *video_decoder_loop (void *stream_gen) {
 
-  xine_stream_private_t *stream = (xine_stream_private_t *)stream_gen;
+  xine_stream_private_t *stream = (xine_stream_private_t *)stream_gen, *m = stream->side_streams[0];
   xine_private_t *xine = (xine_private_t *)stream->s.xine;
   xine_ticket_t   *running_ticket = xine->port_ticket;
   int              running = 1;
+  int              seek_count;
   int              restart = 1;
   int              streamtype;
   int              prof_video_decode = -1;
   int              prof_spu_decode = -1;
   uint32_t         buftype_unknown = 0;
+  int64_t          last_pts = 0;
   /* generic bitrate estimation. */
   int64_t          video_br_lasttime = 0;
   uint32_t         video_br_lastsize = 0;
@@ -153,6 +155,11 @@ static void *video_decoder_loop (void *stream_gen) {
 
   spu_track_map[0] = SPU_TRACK_MAP_END;
 
+  memset (stream->video_decoder_extra_info, 0, sizeof (*stream->video_decoder_extra_info));
+  pthread_mutex_lock (&stream->first_frame.lock);
+  stream->video_decoder_extra_info->seek_count = seek_count = stream->first_frame.seek_count;
+  pthread_mutex_unlock (&stream->first_frame.lock);
+
   running_ticket->acquire (running_ticket, 0);
 
   while (running) {
@@ -163,8 +170,17 @@ static void *video_decoder_loop (void *stream_gen) {
 
     buf = stream->s.video_fifo->tget (stream->s.video_fifo, running_ticket);
 
-    _x_extra_info_merge( stream->video_decoder_extra_info, buf->extra_info );
-    stream->video_decoder_extra_info->seek_count = stream->video_seek_count;
+    if (!buf->extra_info->invalid) {
+      if (buf->extra_info->input_normpos)
+        stream->video_decoder_extra_info->input_normpos = buf->extra_info->input_normpos;
+      if (buf->extra_info->input_time)
+        stream->video_decoder_extra_info->input_time = buf->extra_info->input_time;
+      if (buf->extra_info->frame_number)
+        stream->video_decoder_extra_info->frame_number = buf->extra_info->frame_number;
+      if (buf->extra_info->total_time)
+        stream->video_decoder_extra_info->total_time = buf->extra_info->total_time;
+    }
+    stream->video_decoder_extra_info->seek_count = seek_count;
 
     lprintf ("got buffer 0x%08x\n", buf->type);
 
@@ -229,7 +245,18 @@ static void *video_decoder_loop (void *stream_gen) {
           stream->stream_info[XINE_STREAM_INFO_VIDEO_HANDLED] = handled;
           xine_rwlock_unlock (&stream->info_lock);
         }
-
+        /* legacy: decoders need not pass extra info themselves.
+         * pass them around here, and allow video_out.vo_set_img_ei () to fix reordering.
+         * both will be called from this thread (directly below and inside video_port.draw ()). */
+        if (buf->pts && (buf->pts != last_pts)) {
+          last_pts = buf->pts;
+          m->video_decoder_ei_index = (m->video_decoder_ei_index + 1) & (_XINE_EI_RING_SIZE - 1);
+          /* this covers roughly 1.4 seconds at 5.7 ms resolution, which alone should be
+           * enough to identify the ring index used. */
+          m->video_decoder_ei_fast[((uint32_t)last_pts >> 9) & 255] = m->video_decoder_ei_index;
+          m->ei[2 + m->video_decoder_ei_index].pts = last_pts;
+          m->ei[2 + m->video_decoder_ei_index].ei  = *stream->video_decoder_extra_info;
+        }
         /* video_br_add. some decoders reset buf->pts, do this first. */
         if (buf->pts) {
           int64_t d = buf->pts - video_br_lasttime;
@@ -371,6 +398,14 @@ static void *video_decoder_loop (void *stream_gen) {
             break;
 
           case BUFTYPE_SUB (BUF_CONTROL_START):
+            stream->video_decoder_extra_info->input_normpos = 0;
+            stream->video_decoder_extra_info->input_time = 0;
+            stream->video_decoder_extra_info->frame_number = 0;
+            stream->video_decoder_extra_info->total_time = 0;
+            /* ARGH: demux_image sends whole image as preview at open_internal () time. */
+            pthread_mutex_lock (&stream->first_frame.lock);
+            stream->video_decoder_extra_info->seek_count = seek_count = stream->first_frame.seek_count;
+            pthread_mutex_unlock (&stream->first_frame.lock);
             /* decoder dispose might call port functions */
             /* running_ticket->acquire(running_ticket, 0); */
             if (stream->video_decoder_plugin) {
@@ -487,10 +522,6 @@ static void *video_decoder_loop (void *stream_gen) {
             break;
 
           case BUFTYPE_SUB (BUF_CONTROL_RESET_DECODER):
-            _x_extra_info_reset (stream->video_decoder_extra_info);
-            /* bump seek count, and inform audio decoder about this. */
-            stream->video_seek_count += 1;
-            (void)stream->s.audio_fifo->size (stream->s.audio_fifo);
             /* running_ticket->acquire(running_ticket, 0); */
             if (stream->video_decoder_plugin)
               stream->video_decoder_plugin->reset (stream->video_decoder_plugin);
@@ -514,8 +545,15 @@ static void *video_decoder_loop (void *stream_gen) {
 
           case BUFTYPE_SUB (BUF_CONTROL_NEWPTS):
             lprintf ("new pts %"PRId64"\n", buf->disc_off);
-            t = (buf->decoder_flags & BUF_FLAG_SEEK) ? DISC_STREAMSEEK : DISC_ABSOLUTE;
+            if (buf->decoder_flags & BUF_FLAG_SEEK) {
+              t = DISC_STREAMSEEK;
+            } else {
+              t = DISC_ABSOLUTE;
+            }
           handle_disc:
+            pthread_mutex_lock (&stream->first_frame.lock);
+            stream->video_decoder_extra_info->seek_count = seek_count = stream->first_frame.seek_count;
+            pthread_mutex_unlock (&stream->first_frame.lock);
             if (stream->video_decoder_plugin) {
               /* running_ticket->acquire(running_ticket, 0); */
               stream->video_decoder_plugin->discontinuity (stream->video_decoder_plugin);
@@ -694,3 +732,4 @@ void _x_video_decoder_shutdown (xine_stream_t *s) {
     stream->s.video_fifo = NULL;
   }
 }
+

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2012-2019 the xine project
+ * Copyright (C) 2012-2022 the xine project
  *
  * This file is part of xine, a free video player.
  *
@@ -102,9 +102,9 @@ static const char * const cm_names[] = {
   "YCgCo",
   "YCgCo", /* this is always fullrange */
   "BT.2020 NCL",
-  "fullrange #9",
+  "fullrange BT.2020 NCL",
   "BT.2020 CL",
-  "fullrange #10",
+  "fullrange BT.2020 CL",
   "#11",
   "fullrange #11",
   "#12",

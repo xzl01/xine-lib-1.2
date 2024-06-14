@@ -190,6 +190,7 @@ static int ao_sndio_bytes_per_frame(ao_driver_t *this_gen)
 
 static int ao_sndio_get_gap_tolerance (ao_driver_t *this_gen)
 {
+  (void)this_gen;
   return GAP_TOLERANCE;
 }
 
@@ -305,7 +306,8 @@ static int ao_sndio_set_property (ao_driver_t *this_gen, int property, int value
  */
 static int ao_sndio_ctrl(ao_driver_t *this_gen, int cmd, ...)
 {
-  sndio_driver_t *this = (sndio_driver_t *) this_gen;
+  (void)this_gen;
+  (void)cmd;
 
   /*
    * sndio pauses automatically if there are no more samples to play
@@ -320,6 +322,7 @@ static ao_driver_t *open_plugin (audio_driver_class_t *class_gen, const void *da
 {
   sndio_class_t   *class = (sndio_class_t *) class_gen;
   sndio_driver_t  *this;
+  (void)data;
 
   lprintf ("audio_sndio_out: open_plugin called\n");
 
@@ -368,6 +371,7 @@ static void dispose_class (audio_driver_class_t *this_gen)
 static void *init_class (xine_t *xine, const void *data)
 {
   sndio_class_t        *this;
+  (void)data;
 
   lprintf ("audio_sndio_out: init class\n");
 

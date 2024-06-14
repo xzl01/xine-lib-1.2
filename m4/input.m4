@@ -229,6 +229,7 @@ AC_DEFUN([XINE_INPUT_PLUGINS], [
         fi
         if test x"$have_avformat" = x"yes"; then
             AC_DEFINE([HAVE_AVFORMAT], 1, [Define this if you have libavformat installed])
+            AC_CHECK_HEADERS([libavformat/avformat.h])
         fi
     fi
     AM_CONDITIONAL([ENABLE_AVFORMAT], [test x"$have_avformat" = x"yes"])

@@ -1,6 +1,6 @@
 /* kate: tab-indent on; indent-width 2; mixedindent off; indent-mode cstyle; remove-trailing-space on; */
 /*
- * Copyright (C) 2008-2021 the xine project
+ * Copyright (C) 2008-2022 the xine project
  *
  * This file is part of xine, a free video player.
  *
@@ -47,7 +47,7 @@ typedef struct {
 #define VDEC_HW_H264_FRAME_BOTTOM_FIELD 2
 #define VDEC_HW_H264_FRAME_NEW_SEQ 4
   int flags;
-  int bad_frame; /** "here should have been a frame" */
+  int bad_frame; /** 0 (OK), 1 (may be distorted by missing ref frames), 2 (decode error). */
   int progressive_frame;
   int top_field_first;
   int color_matrix; /** << (MPEG matrix # << 1) | fullrange */

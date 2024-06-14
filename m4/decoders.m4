@@ -134,13 +134,36 @@ a52_init ();
             AC_DEFINE([HAVE_FFMPEG], 1, [Define this if you have the ffmpeg library])
             dnl Check presence of ffmpeg/avutil.h to see if it's old or new
             dnl style for headers. The new style would be preferred actually...
+            dnl Sigh. at least some 09/2022 ffmpeg version does violate the basic
+            dnl "get directly what you use directly" rule. especially, 
+            dnl libavformat/avformat.h includes libavcodec/packet.h which uses
+            dnl (but not includes) libavutil/avutil.h. this means that a mere
+            dnl AC_CHECK_HEADERS([libavformat/avformat.h]) will fail strangely :-/
             ac_save_CFLAGS="$CFLAGS" CFLAGS="$CFLAGS $FFMPEG_CFLAGS"
             ac_save_CPPFLAGS="$CPPFLAGS"
             CPPFLAGS="$CFLAGS $FFMPEG_CFLAGS $AVUTIL_CFLAGS"
-            AC_CHECK_HEADERS([ffmpeg/avutil.h])
-            AC_CHECK_HEADERS([libavutil/avutil.h])
-            AC_CHECK_HEADERS([libavutil/sha1.h])
-            AC_CHECK_HEADERS([libavutil/sha.h])
+            AC_CHECK_HEADERS([ffmpeg/avutil.h libavutil/avutil.h libavutil/sha1.h libavutil/mem.h libavutil/sha.h])
+            AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[
+#include <libavutil/avutil.h>
+#include <libavcodec/avcodec.h>
+            ]],[[]])], [have_avutil_avcodec_h=yes], [have_avutil_avcodec_h=no])
+            test x"$have_avutil_avcodec_h" == x"yes" && AC_DEFINE([HAVE_AVUTIL_AVCODEC_H],[1],
+                [Define this if you have libavutil/avutil.h and libavcodec/avcodec.h.])
+            AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[
+#include <libavutil/avutil.h>
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+            ]],[[]])], [have_avformat_avformat_h=yes], [have_avformat_avformat_h=no])
+            test x"$have_avformat_avformat_h" == x"yes" && AC_DEFINE([HAVE_AVFORMAT_AVFORMAT_H],[1],
+                [Define this if you have libavformat/avformat.h.])
+            AC_COMPILE_IFELSE([AC_LANG_PROGRAM([[
+#include <libavutil/avutil.h>
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libavformat/avio.h>
+            ]],[[]])], [have_avformat_avio_h=yes], [have_avformat_avio_h=no])
+            test x"$have_avformat_avio_h" == x"yes" && AC_DEFINE([HAVE_AVFORMAT_AVIO_H],[1],
+                [Define this if you have libavformat/avformat.h.])
             if test "$ac_cv_header_ffmpeg_avutil_h" = "yes" && test "$ac_cv_header_libavutil_avutil_h" = "yes"; then
                 AC_MSG_ERROR([old & new ffmpeg headers found - you need to clean up!])
             fi

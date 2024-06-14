@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2000-2022 the xine project
+ * Copyright (C) 2000-2023 the xine project
  *
  * This file is part of xine, a free video player.
  *
@@ -63,6 +63,48 @@
 #endif
 
 EXTERN_C_START
+
+/* NOTE: casting char * to int * requires a higher alignment (1 -> 4)
+ * on some machines. on x86, this merely gives a little speedup.
+ * gcc -Wcast-align only warns in the former case.
+ * clang seems to warn always, even if the code clearly shows that
+ * the address _is_ aligned. lets try another kind of hack. */
+static inline uint32_t xine_find_byte (const char *s, uint32_t byte) {
+  const uint32_t eor = ~((byte << 24) | (byte << 16) | (byte << 8) | byte);
+  const union {
+    const char *b;
+    const uint32_t *u;
+  } u = { s - ((uintptr_t)s & 3) };
+  const uint32_t *p = u.u;
+  static const union {
+    uint8_t b[4];
+    uint32_t v;
+  } mask[4] = {
+    {{0xff, 0xff, 0xff, 0xff}},
+    {{0x00, 0xff, 0xff, 0xff}},
+    {{0x00, 0x00, 0xff, 0xff}},
+    {{0x00, 0x00, 0x00, 0xff}},
+  };
+  static const uint8_t rest[32] = {
+    0, 1, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 4, /* big wndian */
+    0, 4, 3, 4, 2, 4, 3, 4, 1, 4, 3, 4, 2, 4, 3, 4  /* little endian */
+  };
+  const union {
+    uint32_t v;
+    uint8_t b[4];
+  } endian = {16};
+  uint32_t w = (*p++ ^ eor) & mask[(uintptr_t)s & 3].v;
+  while (1) {
+    w = w & 0x80808080 & ((w & 0x7f7f7f7f) + 0x01010101);
+    if (w)
+      break;
+    w = *p++ ^ eor;
+  }
+  /* bits 31, 23, 15, 7 -> 3, 2, 1, 0 */
+  w = (w * 0x00204081) & 0xffffffff;
+  w >>= 28;
+  return ((const char *)p - s) - rest[endian.b[0] + w];
+}
 
 /* HAVE_ATOMIC_VARS: 0 = none, 1 = stdatomic.h, 2 = __atomic_*, 3 = __sync_* */
 #if (HAVE_ATOMIC_VARS > 0)
@@ -485,6 +527,23 @@ typedef struct {
   /* special values for set_speed_internal (). now defined in xine/xine_internal.h. */
   /* # define XINE_LIVE_PAUSE_ON 0x7ffffffd */
   /* # define XINE_LIVE_PAUSE_OFF 0x7ffffffc */
+
+  /* share some often used (localized) text as xine_ref_string_t. */
+  struct {
+    char                    *decoder_pri_help;
+  }                          strings;
+
+  struct {
+    /* 0 ... 100% */
+    int                      black, color;
+    /* up 1 per config change */
+    int                      gen;
+    /* 0 ... 15 */
+    uint8_t                  tab[256 * 2];
+  }                          dvbsub;
+
+  /* legacy support */
+  int                        audio_lin_levels;
 } xine_private_t;
   
 typedef struct xine_stream_private_st {
@@ -548,6 +607,9 @@ typedef struct xine_stream_private_st {
   /* 1 << side_stream_index (1, 2, 4, 8) */
   uint32_t                   id_flag;
 
+  /* a id3v2 tag of this many bytes has been parserd, or -1. */
+  int                        id3v2_tag_size;
+
   /* stream meta information */
   /* Grab lock, or use helpers (see info_helper.c). */
   xine_rwlock_t              info_lock;
@@ -568,6 +630,7 @@ typedef struct xine_stream_private_st {
      * 0: waiting done.
      */
     uint32_t                 flag:2;
+    int                      seek_count;
   } first_frame;
 
   /* wait for headers sent / stream decoding finished */
@@ -613,7 +676,6 @@ typedef struct xine_stream_private_st {
 #define XINE_NUM_CURR_EXTRA_INFOS 2
   xine_refs_t                current_extra_info_index;
   extra_info_t               current_extra_info[XINE_NUM_CURR_EXTRA_INFOS];
-  int                        video_seek_count;
 
   int                        delay_finish_event; /* delay event in 1/10 sec units. 0=>no delay, -1=>forever */
 
@@ -642,7 +704,13 @@ typedef struct xine_stream_private_st {
   /* _x_find_input_plugin () recursion protection */
   input_class_t             *query_input_plugins[2];
 
-  extra_info_t               ei[2];
+#define _XINE_EI_RING_SIZE 16
+  uint32_t                   video_decoder_ei_index;
+  uint8_t                    video_decoder_ei_fast[256];
+  struct {
+    int64_t                  pts;
+    extra_info_t             ei;
+  }                          ei[2 + _XINE_EI_RING_SIZE];
 } xine_stream_private_t;
 
 void xine_current_extra_info_set (xine_stream_private_t *stream, const extra_info_t *info) INTERNAL;

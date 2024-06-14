@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2000-2021 the xine project
+ * Copyright (C) 2000-2022 the xine project
  *
  * This file is part of xine, a unix video player.
  *
@@ -25,21 +25,23 @@
 
 #define XFF_INT_VERSION(major,minor,micro) ((major<<16)|(minor<<8)|micro)
 
-#ifndef LIBAVCODEC_VERSION_INT
-#  if defined(LIBAVCODEC_VERSION_MAJOR) && defined(LIBAVCODEC_VERSION_MINOR)
-#    define LIBAVCODEC_VERSION_INT XFF_INT_VERSION(LIBAVCODEC_VERSION_MAJOR,LIBAVCODEC_VERSION_MINOR,0)
-#  else
-#    error ffmpeg headers must be included first !
-#  endif
+/** NOTE: since 2022-09-01, ffmpeg headers are more detached from each other.
+ *  this goes that far:
+ *  libavformat/avformat.h includes libavcodec/packet.h which uses
+ *  (but not includes) libavutil/avutil.h :-/ */
+
+#if !defined(LIBAVUTIL_VERSION_INT) && defined(LIBAVUTIL_VERSION_MAJOR) && defined(LIBAVUTIL_VERSION_MINOR)
+#  define LIBAVUTIL_VERSION_INT XFF_INT_VERSION(LIBAVUTIL_VERSION_MAJOR,LIBAVUTIL_VERSION_MINOR,0)
+#endif
+#if !defined(LIBAVUTIL_VERSION_INT)
+#  error avutil.h must be included first !
 #endif
 
-#ifndef LIBAVUTIL_VERSION_INT
-#  if defined(LIBAVUTIL_VERSION_MAJOR) && defined(LIBAVUTIL_VERSION_MINOR)
-#    define LIBAVUTIL_VERSION_INT XFF_INT_VERSION(LIBAVUTIL_VERSION_MAJOR,LIBAVUTIL_VERSION_MINOR,0)
-#  else
-#    error ffmpeg headers must be included first !
-#  endif
+#if !defined(LIBAVCODEC_VERSION_INT) && defined(LIBAVCODEC_VERSION_MAJOR) && defined(LIBAVCODEC_VERSION_MINOR)
+#  define LIBAVCODEC_VERSION_INT XFF_INT_VERSION(LIBAVCODEC_VERSION_MAJOR,LIBAVCODEC_VERSION_MINOR,0)
 #endif
+
+#if defined(LIBAVCODEC_VERSION_INT)
 
 #if LIBAVCODEC_VERSION_INT >= XFF_INT_VERSION(52,0,0)
 #  define bits_per_sample bits_per_coded_sample
@@ -136,38 +138,6 @@
 #  define XFF_VAAPI 2 /** << libavutil/hwcontext.h, libavutil/hwcontext_vaapi.h */
 #endif
 
-#if LIBAVUTIL_VERSION_INT >= XFF_INT_VERSION(52,0,0)
-#  define PIX_FMT_NONE      AV_PIX_FMT_NONE
-#  define PIX_FMT_YUV420P   AV_PIX_FMT_YUV420P
-#  define PIX_FMT_YUVJ420P  AV_PIX_FMT_YUVJ420P
-#  define PIX_FMT_YUV444P   AV_PIX_FMT_YUV444P
-#  define PIX_FMT_YUVJ444P  AV_PIX_FMT_YUVJ444P
-#  define PIX_FMT_YUV410P   AV_PIX_FMT_YUV410P
-#  define PIX_FMT_YUV411P   AV_PIX_FMT_YUV411P
-#  define PIX_FMT_ARGB      AV_PIX_FMT_ARGB
-#  define PIX_FMT_BGRA      AV_PIX_FMT_BGRA
-#  define PIX_FMT_RGB24     AV_PIX_FMT_RGB24
-#  define PIX_FMT_BGR24     AV_PIX_FMT_BGR24
-#  define PIX_FMT_RGB555BE  AV_PIX_FMT_RGB555BE
-#  define PIX_FMT_RGB555LE  AV_PIX_FMT_RGB555LE
-#  define PIX_FMT_RGB565BE  AV_PIX_FMT_RGB565BE
-#  define PIX_FMT_RGB565LE  AV_PIX_FMT_RGB565LE
-#  define PIX_FMT_PAL8      AV_PIX_FMT_PAL8
-#  define PixelFormat       AVPixelFormat
-/* video_out/video_out_vaapi */
-#  if LIBAVCODEC_VERSION_INT < XFF_INT_VERSION(59,0,100) /** << revise this */
-#    define PIX_FMT_VAAPI_VLD AV_PIX_FMT_VAAPI_VLD
-#    define PIX_FMT_VAAPI_IDCT AV_PIX_FMT_VAAPI_IDCT
-#    define PIX_FMT_VAAPI_MOCO AV_PIX_FMT_VAAPI_MOCO
-#  else
-#    define PIX_FMT_VAAPI_VLD AV_PIX_FMT_VAAPI
-#    define PIX_FMT_VAAPI_IDCT AV_PIX_FMT_VAAPI
-#    define PIX_FMT_VAAPI_MOCO AV_PIX_FMT_VAAPI
-#  endif
-
-#  define CODEC_FLAG_BITEXACT AV_CODEC_FLAG_BITEXACT
-#endif
-
 #if LIBAVCODEC_VERSION_INT >= XFF_INT_VERSION(54,25,0)
 /* dxr3/ffmpeg_encoder */
 #  define CODEC_ID_MPEG1VIDEO AV_CODEC_ID_MPEG1VIDEO
@@ -192,10 +162,6 @@
 #  define CODEC_ID_MP2        AV_CODEC_ID_MP2
 #  define CODEC_ID_AC3        AV_CODEC_ID_AC3
 /* ff_*_decoder mapping is already handled by mkcodeclists.pl */
-#endif
-
-#ifndef AVCODEC_MAX_AUDIO_FRAME_SIZE
-#  define AVCODEC_MAX_AUDIO_FRAME_SIZE 192000
 #endif
 
 #if LIBAVCODEC_VERSION_INT >= XFF_INT_VERSION(55,0,100)
@@ -289,6 +255,52 @@
 #else
 #  define XFF_AVCODEC_REGISTER_ALL() do {} while(0)
 #endif
+
+#if LIBAVCODEC_VERSION_INT < XFF_INT_VERSION(59,24,100)
+#  define XFF_AUDIO_CHANNEL_LAYOUT 1 /* AVCodecContext.channels, .channel_leyout */
+#else
+#  define XFF_AUDIO_CHANNEL_LAYOUT 2 /* AVCodecContext.ch_layout.nb_channels, .ch_layout.u.mask */
+#endif
+
+#ifndef AVCODEC_MAX_AUDIO_FRAME_SIZE
+#  define AVCODEC_MAX_AUDIO_FRAME_SIZE 192000
+#endif
+
+#if LIBAVUTIL_VERSION_INT >= XFF_INT_VERSION(52,0,0)
+#  define PIX_FMT_NONE      AV_PIX_FMT_NONE
+#  define PIX_FMT_YUV420P   AV_PIX_FMT_YUV420P
+#  define PIX_FMT_YUVJ420P  AV_PIX_FMT_YUVJ420P
+#  define PIX_FMT_YUV444P   AV_PIX_FMT_YUV444P
+#  define PIX_FMT_YUVJ444P  AV_PIX_FMT_YUVJ444P
+#  define PIX_FMT_YUV410P   AV_PIX_FMT_YUV410P
+#  define PIX_FMT_YUV411P   AV_PIX_FMT_YUV411P
+#  define PIX_FMT_ARGB      AV_PIX_FMT_ARGB
+#  define PIX_FMT_BGRA      AV_PIX_FMT_BGRA
+#  define PIX_FMT_RGB24     AV_PIX_FMT_RGB24
+#  define PIX_FMT_BGR24     AV_PIX_FMT_BGR24
+#  define PIX_FMT_RGB555BE  AV_PIX_FMT_RGB555BE
+#  define PIX_FMT_RGB555LE  AV_PIX_FMT_RGB555LE
+#  define PIX_FMT_RGB565BE  AV_PIX_FMT_RGB565BE
+#  define PIX_FMT_RGB565LE  AV_PIX_FMT_RGB565LE
+#  define PIX_FMT_PAL8      AV_PIX_FMT_PAL8
+#  define PixelFormat       AVPixelFormat
+/* video_out/video_out_vaapi */
+#  if LIBAVCODEC_VERSION_INT < XFF_INT_VERSION(59,0,100) /** << revise this */
+#    define PIX_FMT_VAAPI_VLD AV_PIX_FMT_VAAPI_VLD
+#    define PIX_FMT_VAAPI_IDCT AV_PIX_FMT_VAAPI_IDCT
+#    define PIX_FMT_VAAPI_MOCO AV_PIX_FMT_VAAPI_MOCO
+#  else
+#    define PIX_FMT_VAAPI_VLD AV_PIX_FMT_VAAPI
+#    define PIX_FMT_VAAPI_IDCT AV_PIX_FMT_VAAPI
+#    define PIX_FMT_VAAPI_MOCO AV_PIX_FMT_VAAPI
+#  endif
+
+#  define CODEC_FLAG_BITEXACT AV_CODEC_FLAG_BITEXACT
+#endif
+
+#else /* defined(LIBAVCODEC_VERSION_INT) */
+#  error avcodec.h must be included first !
+#endif /* defined(LIBAVCODEC_VERSION_INT) */
 
 #endif /* XINE_AVCODEC_COMPAT_H */
 

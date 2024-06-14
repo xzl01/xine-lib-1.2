@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2000-2021 the xine project
+ * Copyright (C) 2000-2022 the xine project
  *
  * This file is part of xine, a free video player.
  *
@@ -407,6 +407,17 @@ static int _osd_show (osd_object_t *osd, int64_t vpts, int unscaled ) {
   CLIP0MAX (osd->y1, osd->height);
   CLIP0MAX (osd->y2, osd->height);
 
+#if 0 /* --- test --- test --- */
+  this->line (osd, osd->x2 - 1, osd->y1,     osd->x2 - 1, osd->y2 - 2, 7);
+  this->line (osd, osd->x2 - 1, osd->y2 - 1, osd->y1 + 1, osd->y2 - 1, 7);
+  this->line (osd, osd->x1,     osd->y2 - 1, osd->x1,     osd->y1 + 1, 7);
+  this->line (osd, osd->x1,     osd->y1,     osd->x2 - 2, osd->y1,     7);
+  this->line (osd, 0, 0, osd->width, osd->height, 21);
+  this->line (osd, 0, osd->height, osd->width, 0, 21);
+  this->line (osd, -10,             osd->height >> 1, osd->width >> 1, osd->height + 10, 21);
+  this->line (osd, osd->width + 10, osd->height >> 1, osd->width >> 1, osd->height + 10, 21);
+#endif
+
 #ifdef DEBUG_RLE
   lprintf("osd_show %p rle starts\n", (void*)osd);
 #endif
@@ -633,136 +644,227 @@ static void osd_point (osd_object_t *osd, int x, int y, int color) {
   *c = color;
 }
 
-/*
- * Bresenham line implementation on osd object
- */
+/* Fast line draw, adapted from tdaudioanalyzer. */
 
-static void osd_line (osd_object_t *osd,
-		      int x1, int y1, int x2, int y2, int color) {
+static void osd_line (osd_object_t *osd, int x1, int y1, int x2, int y2, int color) {
+  int w = x2 - x1;
+  int h = y2 - y1;
 
-  uint8_t *c;
-  int dx, dy, t, inc, d, inc1, inc2;
-  int swap_x = 0;
-  int swap_y = 0;
-
-  lprintf("osd=%p (%d,%d)-(%d,%d)\n", (void*)osd, x1,y1, x2,y2 );
-
-  /* sort line */
-  if (x2 < x1) {
-    t  = x1;
-    x1 = x2;
-    x2 = t;
-    swap_x = 1;
-  }
-  if (y2 < y1) {
-    t  = y1;
-    y1 = y2;
-    y2 = t;
-    swap_y = 1;
-  }
-
-  /* clip line */
-  if (x1 < 0) {
-    if (x2 < 0)
+  lprintf ("osd_line (x1=%d, y1=%d, x2=%d, y2=%d, color=%d).\n", x1, y1, x2, y2, color);
+  /* horizontal line */
+  if (h == 0) {
+    uint8_t *q;
+    if ((y1 < 0) || (y1 >= osd->height))
       return;
-    y1 = y1 + (y2-y1) * -x1 / (x2-x1);
-    x1 = 0;
-  }
-  if (y1 < 0) {
-    if (y2 < 0)
+    if (w < 0) {
+      x1 = x2;
+      w = -w;
+    }
+    w++;
+    if (x1 < 0) {
+      w += x1;
+      x1 = 0;
+    }
+    if (w > osd->width - x1)
+      w = osd->width - x1;
+    if (w <= 0)
       return;
-    x1 = x1 + (x2-x1) * -y1 / (y2-y1);
-    y1 = 0;
-  }
-  if (x2 > osd->width) {
-    if (x1 > osd->width)
-      return;
-    y2 = y1 + (y2-y1) * (osd->width-x1) / (x2-x1);
-    x2 = osd->width;
-  }
-  if (y2 > osd->height) {
-    if (y1 > osd->height)
-      return;
-    x2 = x1 + (x2-x1) * (osd->height-y1) / (y2-y1);
-    y2 = osd->height;
-  }
-
-  if (x1 >= osd->width || y1 >= osd->height)
+    _update_clipping (osd, x1, y1, x1 + w, y1 + 1);
+    q = osd->area + osd->width * y1 + x1;
+    do {
+      *q++ = color;
+      w--;
+    } while (w > 0);
     return;
-
-  _update_clipping(osd, x1, y1, x2, y2);
-
-  dx = x2 - x1;
-  dy = y2 - y1;
-
-  /* unsort line */
-  if (swap_x) {
-    t  = x1;
-    x1 = x2;
-    x2 = t;
-  }
-  if (swap_y) {
-    t  = y1;
-    y1 = y2;
-    y2 = t;
   }
 
-  if( dx>=dy ) {
-    if( x1>x2 )
-    {
-      t = x2; x2 = x1; x1 = t;
-      t = y2; y2 = y1; y1 = t;
+  /* vertical line */
+  if (w == 0) {
+    uint8_t *q;
+    if ((x1 < 0) || (x1 >= osd->width))
+      return;
+    if (h < 0) {
+      y1 = y2;
+      h = -h;
     }
+    h++;
+    if (y1 < 0) {
+      h += y1;
+      y1 = 0;
+    }
+    if (h > osd->height - y1)
+      h = osd->height - y1;
+    if (h <= 0)
+      return;
+    _update_clipping (osd, x1, y1, x1 + 1, y1 + h);
+    q = osd->area + y1 * osd->width + x1;
+    do {
+      *q = color;
+      q += osd->width;
+      h--;
+    } while (h > 0);
+    return;
+  }
 
-    if( y2 > y1 ) inc = 1; else inc = -1;
-
-    inc1 = 2*dy;
-    d = inc1 - dx;
-    inc2 = 2*(dy-dx);
-
-    c = osd->area + y1 * osd->width + x1;
-
-    while(x1<x2)
-    {
-      if (y1 >= 0 && y1 < osd->height)
-        *c++ = color;
-
-      x1++;
-      if( d<0 ) {
-        d+=inc1;
+  /* tilted */
+  {
+    int32_t test[2], n;
+    ssize_t bump[2];
+    long int stepy = osd->width;
+    /* always render downward */
+    if (h < 0) {
+      w = -w;
+      h = -h;
+      x1 = x2;
+      y1 = y2;
+    }
+    /* right to left */
+    if (w < 0) {
+      w = -w;
+      if (w >= h) {
+        /* flat */
+        int skipx = (x1 < osd->width) ? 0 : x1 - osd->width + 1;
+        int skipy = (y1 >= 0) ? 0 : (-y1 * w + (h >> 1)) / h;
+        n = w + 1;
+        if (skipx + skipy > 0) {
+          if (skipx >= skipy) {
+            /* clip right */
+            n -= skipx;
+            x1 = osd->width - 1;
+            y1 += skipx * h / w;
+          } else {
+            /* clip top */
+            n -= skipy;
+            x1 -= skipy;
+            y1 = 0;
+          }
+        }
+        /* clip bottom */
+        skipy = y1 + (n * h + (w >> 1)) / w - osd->height;
+        if (skipy > 0)
+          n -= skipy * w / h;
+        /* clip left */
+        if (n > x1 + 1)
+          n = x1 + 1;
+        if (n <= 0)
+          return;
+        _update_clipping (osd, x1 + 1 - n, y1, x1 + 1, y1 + n * h / w);
+        test[0] = -h;
+        test[1] = w - h;
+        bump[0] = -1;
+        bump[1] = osd->width - 1;
       } else {
-        y1+=inc;
-        d+=inc2;
-        c = osd->area + y1 * osd->width + x1;
+        /* steep */
+        int skipx = (x1 < osd->width) ? 0 : ((x1 - osd->width + 1) * h + (w >> 1)) / w;
+        int skipy = (y1 >= 0) ? 0 : -y1;
+        n = h + 1;
+        if (skipx + skipy > 0) {
+          if (skipy >= skipx) {
+            /* clip top */
+            n -= skipy;
+            x1 -= skipy * w / h;
+            y1 = 0;
+          } else {
+            /* clip right */
+            n -= skipx;
+            x1 = osd->width - 1;
+            y1 += skipx;
+          }
+        }
+        /* clip left */
+        skipx = (n * w + (h >> 1)) / h - x1 - 1;
+        if (skipx > 0)
+          n -= skipx * h / w;
+        /* clip bottom */
+        if (n > osd->height - y1)
+          n = osd->height - y1;
+        if (n <= 0)
+          return;
+        _update_clipping (osd, x1 + 1 - n * w / h, y1, x1 + 1, y1 + n);
+        test[0] = -w;
+        test[1] = h - w;
+        bump[0] = osd->width;
+        bump[1] = osd->width - 1;
+      }
+    } else {
+      /* left to right */
+      if (w >= h) {
+        /* flat */
+        int skipx = (x1 >= 0) ? 0 : -x1;
+        int skipy = (y1 >= 0) ? 0 : (-y1 * w + (h >> 1)) / h;
+        n = w + 1;
+        if (skipx + skipy > 0) {
+          if (skipx >= skipy) {
+            /* clip left */
+            n -= skipx;
+            x1 = 0;
+            y1 += skipx * h / w;
+          } else {
+            /* clip top */
+            n -= skipy;
+            x1 += skipy;
+            y1 = 0;
+          }
+        }
+        /* clip bottom */
+        skipy = y1 + (n * h + (w >> 1)) / w - osd->height;
+        if (skipy > 0)
+          n -= skipy * w / h;
+        /* clip right */
+        if (n > osd->width - x1)
+          n = osd->width - x1;
+        if (n <= 0)
+          return;
+        _update_clipping (osd, x1, y1, x1 + n, y1 + n * h / w);
+        test[0] = -h;
+        test[1] = w - h;
+        bump[0] = 1;
+        bump[1] = osd->width + 1;
+      } else {
+        /* steep */
+        int skipx = (x1 >= 0) ? 0 : (-x1 * h + (w >> 1)) / w;
+        int skipy = (y1 >= 0) ? 0 : -y1;
+         n = h + 1;
+        if (skipx + skipy > 0) {
+          if (skipy >= skipx) {
+            /* clip top */
+            n -= skipy;
+            x1 += skipy * w / h;
+            y1 = 0;
+          } else {
+            /* clip left */
+            n -= skipx;
+            x1 = 0;
+            y1 += skipx;
+          }
+        }
+        /* clip right */
+        skipx = osd->width - x1 - (n * w + (h >> 1)) / h;
+        if (skipx > 0)
+          n -= skipx * h / w;
+        /* clip bottom */
+        if (n > osd->height - y1)
+          n = osd->height - y1;
+        if (n <= 0)
+          return;
+        _update_clipping (osd, x1, y1, x1 + n * w / h, y1 + n);
+        test[0] = -w;
+        test[1] = h - w;
+        bump[0] = osd->width;
+        bump[1] = osd->width + 1;
       }
     }
-  } else {
-    if( y1>y2 ) {
-      t = x2; x2 = x1; x1 = t;
-      t = y2; y2 = y1; y1 = t;
-    }
-
-    if( x2 > x1 ) inc = 1; else inc = -1;
-
-    inc1 = 2*dx;
-    d = inc1-dy;
-    inc2 = 2*(dx-dy);
-
-    c = osd->area + y1 * osd->width + x1;
-
-    while(y1<y2) {
-      if (x1 >= 0 && x1 < osd->width)
-        *c = color;
-
-      c += osd->width;
-      y1++;
-      if( d<0 ) {
-	d+=inc1;
-      } else {
-	x1+=inc;
-	d+=inc2;
-	c = osd->area + y1 * osd->width + x1;
-      }
+    /* render */
+    {
+      uint8_t *q = osd->area + y1 * stepy + x1;
+      int32_t d = test[1];
+      do {
+        uint32_t i = (uint32_t)d >> 31;
+        *q = color;
+        d += test[i];
+        q += bump[i];
+        n--;
+      } while (n > 0);
     }
   }
 }
@@ -777,7 +879,7 @@ static void osd_filled_rect (osd_object_t *osd,
 
   int x, y, dx, dy;
 
-  lprintf("osd=%p (%d,%d)-(%d,%d)\n", (void*)osd, x1,y1, x2,y2 );
+  lprintf ("osd_filled_rect (x1=%d, y1=%d, x2=%d, y2=%d, color=%d).\n", x1, y1, x2, y2, color);
 
   /* sort rectangle */
   x  = MIN( x1, x2 );
@@ -903,6 +1005,7 @@ static int osd_renderer_load_font (osd_renderer_t *this, const char *filename) {
     if (!font)
       break;
     memcpy (font->name, b, sizeof (font->name));
+    font->name[sizeof(font->name) - 1] = 0;
     font->version = i;
     font->size = _X_LE_16 (b + sizeof (font->name) + 1 * 2);
     font->num_fontchars = _X_LE_16 (b + sizeof (font->name) + 2 * 2);

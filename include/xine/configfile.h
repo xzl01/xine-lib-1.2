@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2000-2020 the xine project
+ * Copyright (C) 2000-2022 the xine project
  *
  * This file is part of xine, a free video player.
  *
@@ -89,6 +89,10 @@ struct config_values_s {
    * registered item, i.e. the default value if it was
    * not found in the config file or the current value
    * from the config file otherwise
+   * NOTE: config entries registered during class init of
+   * input, demux, decoder, or post plugins will _always_
+   * show up in the application - even if that plugin is
+   * not currently loaded.
    *
    * NOTE on callbacks:
    * - callback shall be safe to run from _any_ thread.
@@ -288,4 +292,3 @@ void _x_config_unregister_cb_class_p (config_values_t *config, xine_config_cb_t 
 #endif
 
 #endif
-

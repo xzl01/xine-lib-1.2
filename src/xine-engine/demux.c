@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2000-2021 the xine project
+ * Copyright (C) 2000-2023 the xine project
  *
  * This file is part of xine, a free video player.
  *
@@ -598,6 +598,7 @@ int _x_demux_start_thread (xine_stream_t *s) {
                "demux: can't create new thread (%s)\n", strerror(err));
       stream->demux.thread_running = 0;
       stream->demux.thread_created = 0;
+      pthread_mutex_unlock (&stream->demux.lock);
       return -1;
     }
   }
@@ -647,7 +648,8 @@ int _x_demux_stop_thread (xine_stream_t *s) {
   return 0;
 }
 
-int _x_demux_read_header (input_plugin_t *input, void *buffer, off_t size) {
+int _x_demux_read_stream_header (xine_stream_t *stream, input_plugin_t *input, void *buffer, size_t size) {
+  xine_stream_private_t *s = (xine_stream_private_t *)stream;
   int want_size = size;
   uint32_t caps;
 
@@ -662,11 +664,17 @@ int _x_demux_read_header (input_plugin_t *input, void *buffer, off_t size) {
   }
 
   if (caps & INPUT_CAP_SEEKABLE) {
-    if (input->seek (input, 0, SEEK_SET) != 0)
+    int start = 0;
+
+    if (s && (s->id3v2_tag_size >= 0))
+      start = s->id3v2_tag_size;
+    if (input->seek (input, start, SEEK_SET) != start)
       return 0;
     want_size = input->read (input, buffer, want_size);
-    if (input->seek (input, 0, SEEK_SET) != 0)
+    if (input->seek (input, start, SEEK_SET) != start)
       return 0; /* no point to continue any further */
+    if (want_size <= 0)
+      return 0;
     return want_size;
   }
 
@@ -691,6 +699,10 @@ int _x_demux_read_header (input_plugin_t *input, void *buffer, off_t size) {
   }
 
   return 0;
+}
+
+int _x_demux_read_header (input_plugin_t *input, void *buffer, off_t size) {
+  return _x_demux_read_stream_header (NULL, input, buffer, size);
 }
 
 int _x_demux_check_extension (const char *mrl, const char *extensions){

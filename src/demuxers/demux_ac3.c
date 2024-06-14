@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2001-2018 the xine project
+ * Copyright (C) 2001-2023 the xine project
  *
  * This file is part of xine, a free video player.
  *
@@ -343,6 +343,7 @@ static int demux_ac3_send_chunk (demux_plugin_t *this_gen) {
     buf->extra_info->input_normpos = (int)( (double) current_stream_pos *
                                      65535 / this->input->get_length (this->input) );
   buf->extra_info->input_time = audio_pts / 90;
+  buf->extra_info->total_time = this->running_time;
   buf->pts = audio_pts;
   buf->decoder_flags |= BUF_FLAG_FRAME_END;
 

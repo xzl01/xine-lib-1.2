@@ -3,13 +3,14 @@ Upstream-Name: xine-lib
 Source: https://sourceforge.net/projects/xine/files/xine-lib/
 
 Files: *
-Copyright: 2000-2019 the xine project
+Copyright: 2000-2023 the xine project
 License: GPL-2+
 Comment: See the AUTHORS file for a list of authors.
 
 Files: debian/*
 Copyright: Siggi Langauf <siggi@debian.org>
            2017 Mattia Rizzolo <mattia@debian.org>
+		   2022-2023 Patrick Matthäi <pmatthaei@debian.org>
 License: GPL-2+
 
 Files: contrib/a52dec/*

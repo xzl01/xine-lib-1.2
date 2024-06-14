@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2019-2020 the xine project
+ * Copyright (C) 2019-2022 the xine project
  *
  * This file is part of xine, a free video player.
  *
@@ -116,6 +116,31 @@ static int multirate_autoselect (multirate_pref_t *pref, multirate_pref_t *list,
       }
     }
     item++;
+  }
+  return best_n;
+}
+
+static inline int multirate_audio_autoselect (multirate_pref_t *pref, multirate_pref_t *list, int list_size) {
+  multirate_pref_t *item;
+  int n, best_n, best_b;
+  if (list_size <= 0)
+    return -1;
+  if (list_size == 1)
+    return 0;
+  best_n = -1;
+  best_b = 0x7fffffff;
+  for (item = list, n = 0; n < list_size; item++, n++) {
+    int b;
+    if ((item->video_width | item->video_height))
+      continue;
+    b = item->bitrate - pref->bitrate;
+    b = b < 0 ? -b : b;
+    if (item->lang[0] && pref->lang[0] && strcasecmp (item->lang, pref->lang))
+      b += 0x40000000;
+    if (b < best_b) {
+      best_n = n;
+      best_b = b;
+    }
   }
   return best_n;
 }

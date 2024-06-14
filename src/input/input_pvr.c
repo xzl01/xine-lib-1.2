@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2000-2021 the xine project
+ * Copyright (C) 2000-2023 the xine project
  * March 2003 - Miguel Freitas
  * This plugin was sponsored by 1Control
  *
@@ -1047,7 +1047,7 @@ static void pvr_event_handler (pvr_input_plugin_t *this) {
 
         vf.tuner = 0;
         vf.type = vt.type;
-        vf.frequency = (__u32)(freq * fac);
+        vf.frequency = (uint32_t)(freq * fac);
 
         if (ioctl(this->dev_fd, VIDIOC_S_FREQUENCY, &vf) == 0) {
           lprintf("Tuner Frequency set to %d (%f.3 MHz)\n", vf.frequency, vf.frequency / fac);
@@ -1602,4 +1602,3 @@ const plugin_info_t xine_plugin_info[] EXPORTED = {
   { PLUGIN_INPUT | PLUGIN_MUST_PRELOAD, 18, "pvr", XINE_VERSION_CODE, NULL, init_plugin },
   { PLUGIN_NONE, 0, NULL, 0, NULL, NULL }
 };
-

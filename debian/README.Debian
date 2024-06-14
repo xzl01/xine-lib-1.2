@@ -12,7 +12,7 @@ If a patch is present in the upstream repository, name it
 The CSS plugin story...
 =======================
 
-xine does support playing unencrypted and encrypted dvd using the library 
+xine does support playing unencrypted and encrypted dvd using the library
 libdvdread/libdvdcss. Due to legal reasons, it is not possible for debian
 nor derivatives to ship a libdvdcss, which would be needed to play encrypted
 dvds.
@@ -33,8 +33,6 @@ conceivable setup. (Systems that run a sound daemon usually do so because
 otherwise they would only have one sound channel. So in those cases the daemon
 should be used, unless explicitly configured otherwise.)
 
-So, if you are experiencing instant crashes with the error message 
-'can't create mcop directory', please start xine (xine-ui or gxine) with parameter 
+So, if you are experiencing instant crashes with the error message
+'can't create mcop directory', please start xine (xine-ui or gxine) with parameter
 "-A auto"
-
-

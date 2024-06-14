@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2013-2020 the xine project
+ * Copyright (C) 2013-2022 the xine project
  * Copyright (C) 2013-2020 Petri Hintukainen <phintuka@users.sourceforge.net>
  *
  * This file is part of xine, a free video player.
@@ -28,6 +28,8 @@
 #include <string.h>
 #include <pthread.h>
 
+#include <libavutil/avutil.h>
+#include <libavcodec/avcodec.h>
 #include <libavformat/avio.h>
 
 #define LOG_MODULE "libavio"

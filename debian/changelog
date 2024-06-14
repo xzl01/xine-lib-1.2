@@ -1,8 +1,107 @@
-xine-lib-1.2 (1.2.12-1+u005) UNRELEASED; urgency=medium
+xine-lib-1.2 (1.2.13+hg20230710-2.1) unstable; urgency=medium
 
-  * update
+  * Non-maintainer upload.
+  * debian/libxine2-bin.symbols: Remove private symbols not externally used.
+    (Closes: #1070838)
+  * debian/rules: Delete .cvsversion to correct the behavior of version.sh.
+    (Closes: #1070990)
 
- -- Debian QA Group <packages@qa.debian.org>  Thu, 19 May 2022 09:26:02 +0800
+ -- Boyuan Yang <byang@debian.org>  Sun, 12 May 2024 11:42:36 -0400
+
+xine-lib-1.2 (1.2.13+hg20230710-2) unstable; urgency=medium
+
+  * Apply patch from Pino Toscano to avoid a FTBFS on hurd-i386 and to improve
+    the support. Thank you!
+    Closes: #1040957
+  * Remove leftover gmo files in dh_clean.
+    Closes: #1046653
+
+ -- Patrick Matthäi <pmatthaei@debian.org>  Tue, 22 Aug 2023 17:15:41 +0200
+
+xine-lib-1.2 (1.2.13+hg20230710-1) unstable; urgency=medium
+
+  * Update xine-lib to the code base from 10.07.2023.
+
+ -- Patrick Matthäi <pmatthaei@debian.org>  Mon, 10 Jul 2023 18:53:46 +0200
+
+xine-lib-1.2 (1.2.13+hg20230704-1) unstable; urgency=medium
+
+  * Update xine-lib to the code base from 04.07.2023.
+    - Fixes the changed volume scaling.
+      Closes: #1040201
+
+ -- Patrick Matthäi <pmatthaei@debian.org>  Tue, 04 Jul 2023 15:56:37 +0200
+
+xine-lib-1.2 (1.2.13-2) unstable; urgency=medium
+
+  * Use the SDL 1.2 compat package.
+    Closes: #1038096
+  * Explicit disable sndio feature to avoid a FTBFS, if the library is
+    installed.
+    Closes: #1039479
+  * Update debian/copyright.
+  * Switch away from obsolete build dependency names.
+
+ -- Patrick Matthäi <pmatthaei@debian.org>  Sun, 02 Jul 2023 16:43:46 +0200
+
+xine-lib-1.2 (1.2.13-1) unstable; urgency=medium
+
+  * New upstream release.
+    - Drop merged patch 01-support-dav1d-1.0.0.
+    - Drop merged patch 02-ffmpeg-51-ftbfs.
+    - Update libxine2-bin.symbols.
+  * Bump Standards-Version to 4.6.2.
+  * Adjust lintian overrides.
+
+ -- Patrick Matthäi <pmatthaei@debian.org>  Fri, 27 Jan 2023 12:24:50 +0100
+
+xine-lib-1.2 (1.2.12-5) unstable; urgency=medium
+
+  * Drop xine-config.1 manpage.
+  * Adjust renamed lintian tag name in override.
+
+ -- Patrick Matthäi <pmatthaei@debian.org>  Wed, 14 Sep 2022 14:38:13 +0200
+
+xine-lib-1.2 (1.2.12-4) unstable; urgency=high
+
+  * Set urgency to high, because of the last fix of the FTBFS.
+  * Rename patches.
+  * Adopt package, thanks for the previous great work!
+    Closes: #881514
+  * Drop libxine2-gnome package (no reverse dependencies).
+    Closes: #967825
+  * Update debian/copyright.
+  * Some packaging reworks.
+  * Adjust lintian overrides.
+
+ -- Patrick Matthäi <pmatthaei@debian.org>  Thu, 08 Sep 2022 15:11:16 +0200
+
+xine-lib-1.2 (1.2.12-3) unstable; urgency=medium
+
+  * QA upload.
+  * Add patch ffmpeg_51_ftbfs to fix a FTBFS with ffmpeg 5.1.
+    Closes: #1017133
+
+ -- Patrick Matthäi <pmatthaei@debian.org>  Tue, 06 Sep 2022 12:23:43 +0200
+
+xine-lib-1.2 (1.2.12-2) unstable; urgency=medium
+
+  * QA upload.
+
+  [ Debian Janitor ]
+  * Remove constraints unnecessary since buster:
+    + Build-Depends: Drop versioned constraint on libavcodec-dev,
+      libavformat-dev, libcdio-dev, libdirectfb-dev, libjack-dev and
+      libpostproc-dev.
+
+  [ Vagrant Cascadian ]
+  * debian/rules: Remove the build path from libxine.pc in dh_install
+    override. (Closes: #1010948)
+  * debian/patches: Fix building with dav1d. (Closes: #1008607) Thanks to
+    Dylan Aïssi and Petri Hintukainen.
+  * debian/control: Update Standards-Version to 4.6.1.
+
+ -- Vagrant Cascadian <vagrant@debian.org>  Wed, 18 May 2022 16:18:54 -0700
 
 xine-lib-1.2 (1.2.12-1) unstable; urgency=medium
 

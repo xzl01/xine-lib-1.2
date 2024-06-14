@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2000-2022 the xine project
+ * Copyright (C) 2000-2023 the xine project
  *
  * This file is part of xine, a free video player.
  *
@@ -128,6 +128,9 @@ typedef struct {
     /* Snapshot of rp.ready_num. */
     int                     flush_extra;
     int                     num_flush_waiters;
+    /* frame rate limit */
+    int                     max_frame_rate;
+    uint32_t                min_frame_duration;
     /* frame stream refs.
      * we need to ref a stream for at least as long as it has frames flying around.
      * at first sight, it would be nice to unref as early as puossible, so the
@@ -165,6 +168,9 @@ typedef struct {
     /* Wakeup time. */
     struct timespec         now;
     int                     speed;
+    /* frame rate limit */
+    uint32_t                min_frame_duration;
+    int64_t                 skip_until;
   } rp;
 
   /* Get grab_lock when
@@ -211,6 +217,8 @@ typedef struct {
   video_overlay_manager_t  *overlay_source;
 
   extra_info_t             *extra_info_base; /* used to free mem chunk */
+
+  uint32_t                  last_ei_index;
 
   int                       current_width, current_height;
   int64_t                   current_duration;
@@ -796,6 +804,16 @@ static vo_frame_t *vo_free_get_dupl (vos_t *this, vo_frame_t *s) {
   pthread_mutex_unlock (&this->free_queue.mutex);
 
   return img;
+}
+
+static void vo_update_max_frame_rate (vos_t *this, int speed) {
+  if (this->display_queue.max_frame_rate <= 0) {
+    this->display_queue.min_frame_duration = 0;
+  } else {
+    /* acually allow rate + 0.5 */
+    int v = (XINE_FINE_SPEED_NORMAL / 10000) * (this->display_queue.max_frame_rate * 2 + 1);
+    this->display_queue.min_frame_duration = (90000 / 10000 * 2) * speed / v;
+  }
 }
 
 
@@ -1422,6 +1440,47 @@ static vo_frame_t * crop_frame( xine_video_port_t *this_gen, vo_frame_t *img ) {
   return dupl;
 }
 
+static void vo_set_img_ei (vos_t *this, vo_frame_t *img) {
+  xine_stream_private_t *s = (xine_stream_private_t *)img->stream;
+  const extra_info_t *ei = s->video_decoder_extra_info;
+
+  if (img->pts) do {
+    xine_stream_private_t *m = s->side_streams[0];
+    uint32_t b, i;
+    /* try fast hash table. */
+    i = m->video_decoder_ei_fast[((uint32_t)img->pts >> 9) & 255];
+    if (img->pts == m->ei[2 + i].pts) {
+      this->last_ei_index = i;
+      ei = &m->ei[2 + i].ei;
+      break;
+    }
+    /* high end deinterlacers insert filler frames from 2nd field. */
+    {
+      int64_t d;
+      i = this->last_ei_index;
+      d = img->pts - m->ei[2 + i].pts;
+      if ((d >= 0) && (d < 90000 * 3 / 4 / 24)) {
+        ei = &m->ei[2 + i].ei;
+        _x_extra_info_merge (img->extra_info, ei);
+        img->extra_info->input_time += (uint32_t)d / 90;
+        return;
+      }
+    }
+    /* fallback 1: manual search. */
+    b = i = m->video_decoder_ei_index;
+    do {
+      if (img->pts == m->ei[2 + i].pts) {
+        this->last_ei_index = i;
+        ei = &m->ei[2 + i].ei;
+        break;
+      }
+      i = (i + _XINE_EI_RING_SIZE - 1) & (_XINE_EI_RING_SIZE - 1);
+    } while (i != b);
+    /* fallback 2: old style latest ei mode. */
+  } while (0);
+  _x_extra_info_merge (img->extra_info, ei);
+}
+
 static int vo_frame_draw (vo_frame_t *img, xine_stream_t *s) {
 
   xine_stream_private_t *stream = (xine_stream_private_t *)s;
@@ -1475,7 +1534,7 @@ static int vo_frame_draw (vo_frame_t *img, xine_stream_t *s) {
       }
     }
     img->stream = &stream->s;
-    _x_extra_info_merge( img->extra_info, stream->video_decoder_extra_info );
+    vo_set_img_ei (this, img);
     stream->s.metronom->got_video_frame (stream->s.metronom, img);
 #ifdef ADD_KEYFRAME_INDEX
     if (FIXME: IS_KEYFRAME (img)) {
@@ -1759,6 +1818,7 @@ static void vo_ready_refill (vos_t *this) {
   vo_frame_t *first, **add;
 
   pthread_mutex_lock (&this->display_queue.mutex);
+  this->rp.min_frame_duration = this->display_queue.min_frame_duration;
   first = this->display_queue.first;
   if (!first) {
     this->display_queue.flush_extra = this->rp.ready_num;
@@ -1789,6 +1849,7 @@ static vo_frame_t *vo_ready_get_all (vos_t *this) {
   }
   this->display_queue.flush_extra = 0;
   this->rp.need_flush_signal = this->display_queue.num_flush_waiters;
+  this->rp.min_frame_duration = this->display_queue.min_frame_duration;
   pthread_mutex_unlock (&this->display_queue.mutex);
 
   *(this->rp.ready_add) = first;
@@ -1857,7 +1918,7 @@ static vo_frame_t *vo_ready_get_dupl (vos_t *this, vo_frame_t *s) {
  * to avoid deadlocks we don't use vo_free_queue_get ()
  * but vo_*_get_dupl () instead.
  */
-static vo_frame_t *duplicate_frame (vos_t *this, vo_frame_t *img) {
+static vo_frame_t *duplicate_frame (vos_t *this, vo_frame_t *img, int locks) {
   vo_frame_t *dupl;
 
   if (!img)
@@ -1874,7 +1935,7 @@ static vo_frame_t *duplicate_frame (vos_t *this, vo_frame_t *img) {
   }
 
   pthread_mutex_lock (&dupl->mutex);
-  dupl->lock_counter   = 1;
+  dupl->lock_counter   = locks;
   dupl->width          = img->width;
   dupl->height         = img->height;
   dupl->ratio          = img->ratio;
@@ -2017,7 +2078,25 @@ static vo_frame_t *next_frame (vos_t *this, int64_t *vpts) {
       img = img->next;
     }
     this->rp.last_flushed = keep[1];
-    if (this->rp.last_flushed) {
+    do {
+      if (!this->rp.last_flushed)
+        break;
+      /* if filler frame might be tied to a flushing hwaccel decoder,
+       * do not stand in the way there. newer vdpau_radeonsi is known to
+       * crash on this. if duplicating the frame should not be enough,
+       * we might need to drop the filler entirely. */
+      if (this->rp.last_flushed->proc_duplicate_frame_data) {
+        vo_frame_t *dupl = duplicate_frame (this, this->rp.last_flushed, 2);
+        if (!vo_frame_dec2_lock_int (this, this->rp.last_flushed)) {
+          *add = this->rp.last_flushed;
+          add = &this->rp.last_flushed->next;
+          a++;
+        }
+        this->rp.last_flushed = dupl;
+        if (!dupl)
+          break;
+        vo_reref (this, dupl);
+      }
       this->rp.last_flushed->next = NULL;
       if (!this->grab.last_frame) { /* rare late setting */
         vo_frame_inc_lock (this->rp.last_flushed);
@@ -2025,7 +2104,7 @@ static vo_frame_t *next_frame (vos_t *this, int64_t *vpts) {
         this->grab.last_frame = this->rp.last_flushed;
         pthread_mutex_unlock (&this->grab.lock);
       }
-    }
+    } while (0);
     /* Override with first frame. */
     if (keep[0]) {
       keep[0]->vpts = *vpts;
@@ -2038,8 +2117,15 @@ static vo_frame_t *next_frame (vos_t *this, int64_t *vpts) {
     /* Make sure clients dont miss this. */
     if (this->rp.need_flush_signal) {
       pthread_mutex_lock (&this->display_queue.mutex);
+      this->num_frames_delivered = 0;
+      this->num_frames_skipped = 0;
+      this->num_frames_discarded = 0;
       pthread_cond_broadcast (&this->display_queue.done_flushing);
       pthread_mutex_unlock (&this->display_queue.mutex);
+    } else {
+      this->num_frames_delivered = 0;
+      this->num_frames_skipped = 0;
+      this->num_frames_discarded = 0;
     }
     /* Report success. */
     if (n) {
@@ -2047,6 +2133,7 @@ static vo_frame_t *next_frame (vos_t *this, int64_t *vpts) {
         LOG_MODULE ": flushed out %d frames (now=%"PRId64", discard=%d).\n",
         n, *vpts, this->display_queue.discard_frames);
     }
+    /* done */
     this->redraw_needed = 0;
     *vpts = 0;
     return keep[0];
@@ -2088,6 +2175,8 @@ static vo_frame_t *next_frame (vos_t *this, int64_t *vpts) {
         this->rp.last_flushed = NULL;
         img->vpts = *vpts;
         *vpts = img->vpts + (img->duration ? img->duration : DEFAULT_FRAME_DURATION);
+        xprintf (&this->xine->x, XINE_VERBOSITY_DEBUG,
+          LOG_MODULE ": showing filler frame @ vpts %" PRId64 ".\n", *vpts);
         return img;
       }
       this->rp.wakeups_early++;
@@ -2105,16 +2194,25 @@ static vo_frame_t *next_frame (vos_t *this, int64_t *vpts) {
       duration = img->duration ? img->duration
         : (img->next ? img->next->vpts - img->vpts : DEFAULT_FRAME_DURATION);
       if (diff <= duration) {
-        /* OK, show this one */
-        *vpts = img->vpts + duration;
-        break;
+        /* frame rate limit */
+        if (img->vpts >= this->rp.skip_until) {
+          /* update vpts to ensure fluent playback at 1/2, 1/3, etc rate. */
+          this->rp.skip_until = img->vpts + this->rp.min_frame_duration;
+          /* OK, show this one */
+          *vpts = img->vpts + duration;
+          break;
+        } /* else silent drop */
+      } else {
+        /* regular drop */
+        xine_log (&this->xine->x, XINE_LOG_MSG,
+          _("video_out: throwing away image with pts %" PRId64 " because it's too old (diff : %" PRId64 ").\n"),
+          img->vpts, diff);
+        /* lock to inform decodeer_thread.vo_frame_draw () earlier. */
+        pthread_mutex_lock (&this->display_queue.mutex);
+        this->num_frames_discarded++;
+        pthread_mutex_unlock (&this->display_queue.mutex);
       }
-      xine_log (&this->xine->x, XINE_LOG_MSG,
-        _("video_out: throwing away image with pts %" PRId64 " because it's too old (diff : %" PRId64 ").\n"),
-        img->vpts, diff);
     }
-
-    this->num_frames_discarded++;
 
     img = vo_ready_pop (this);
 
@@ -2298,7 +2396,7 @@ static void paused_loop( vos_t *this, int64_t vpts )
       if (!f) {
         check_redraw_needed (this, vpts);
         if (this->redraw_needed) {
-          f = duplicate_frame (this, this->grab.last_frame);
+          f = duplicate_frame (this, this->grab.last_frame, 1);
           if (f) {
             vo_reref (this, f);
             f->vpts = vpts;
@@ -2348,6 +2446,26 @@ static void paused_loop( vos_t *this, int64_t vpts )
   vo_free_queue_read_unlock (this);
 }
 
+static void video_out_set_warn_skipped_threshold (void *this_gen, xine_cfg_entry_t *entry) {
+  vos_t *this = (vos_t *)this_gen;
+  /* no lock here will merely delay changes a bit. */
+  this->warn_skipped_threshold = entry->num_value;
+}
+
+static void video_out_set_warn_discarded_threshold (void *this_gen, xine_cfg_entry_t *entry) {
+  vos_t *this = (vos_t *)this_gen;
+  /* no lock here will merely delay changes a bit. */
+  this->warn_discarded_threshold = entry->num_value;
+}
+
+static void video_out_set_max_frame_rate (void *this_gen, xine_cfg_entry_t *entry) {
+  vos_t *this = (vos_t *)this_gen;
+  pthread_mutex_lock (&this->display_queue.mutex);
+  this->display_queue.max_frame_rate = entry->num_value;
+  vo_update_max_frame_rate (this, this->trigger_drawing.speed);
+  pthread_mutex_unlock (&this->display_queue.mutex);
+}
+
 static void video_out_update_disable_flush_from_video_out(void *this_gen, xine_cfg_entry_t *entry) {
   vos_t *this = (vos_t *)this_gen;
   this->disable_decoder_flush_from_video_out = entry->num_value;
@@ -2365,12 +2483,9 @@ static void *video_out_loop (void *this_gen) {
   this->disable_decoder_flush_from_video_out = this->xine->x.config->register_bool (this->xine->x.config,
     "engine.decoder.disable_flush_from_video_out", 0,
     _("disable decoder flush from video out"),
-    _("video out causes a decoder flush when video out runs out of frames for displaying,\n"
-      "because the decoder hasn't deliverd new frames for quite a while.\n"
-      "flushing the decoder causes decoding errors for images decoded after the flush.\n"
-      "to avoid the decoding errors, decoder flush at video out should be disabled.\n\n"
-      "WARNING: as the flush was introduced to fix some issues when playing DVD still images, it is\n"
-      "likely that these issues may reappear in case they haven't been fixed differently meanwhile.\n"),
+    _("Video decoder is flushed when it hasn't delivered new frames for quite a while.\n"
+      "Turning this off fixes some temporary image distortion.\n"
+      "But it may also add some issues with DVD still images.\n"),
     20, video_out_update_disable_flush_from_video_out, this);
 
   /*
@@ -2409,7 +2524,7 @@ static void *video_out_loop (void *this_gen) {
         if (this->grab.last_frame && (this->redraw_needed == 1)) {
           lprintf ("generating still frame (vpts = %" PRId64 ") \n", vpts);
           /* keep playing still frames */
-          img = duplicate_frame (this, this->grab.last_frame);
+          img = duplicate_frame (this, this->grab.last_frame, 1);
           if (img) {
             vo_reref (this, img);
             img->vpts = vpts;
@@ -2936,6 +3051,11 @@ static void vo_speed_change_cb (void *this_gen, int new_speed) {
   }
   this->trigger_drawing.speed = new_speed;
   pthread_mutex_unlock (&this->trigger_drawing.mutex);
+
+  pthread_mutex_lock (&this->display_queue.mutex);
+  vo_update_max_frame_rate (this, new_speed);
+  pthread_mutex_unlock (&this->display_queue.mutex);
+
   xprintf (&this->xine->x, XINE_VERBOSITY_DEBUG, LOG_MODULE ": new speed %d.\n", new_speed);
 }
 
@@ -3268,18 +3388,26 @@ xine_video_port_t *_x_vo_new_port (xine_t *xine, vo_driver_t *driver, int grabon
 
   this->xine->port_ticket->revoke_cb_register (this->xine->port_ticket, vo_ticket_revoked, this);
 
+  this->display_queue.max_frame_rate =
+    xine->config->register_num (xine->config, "video.output.max_frame_rate", 0,
+    _("Limit output frame rate"),
+    _("If not 0, limit output frame rate to this value, without extra jitter.\n"
+      "Try 40 to save power, and/or to deal with a slow driver.\n"
+      "Otherwise, current screen refresh rate plus 5 may be a good idea ;-)\n"),
+    20, video_out_set_max_frame_rate, this);
+
   this->warn_skipped_threshold =
     xine->config->register_num (xine->config, "engine.performance.warn_skipped_threshold", 10,
     _("percentage of skipped frames to tolerate"),
     _("When more than this percentage of frames are not shown, because they "
       "were not decoded in time, xine sends a notification."),
-    20, NULL, NULL);
+    20, video_out_set_warn_skipped_threshold, this);
   this->warn_discarded_threshold =
     xine->config->register_num (xine->config, "engine.performance.warn_discarded_threshold", 10,
     _("percentage of discarded frames to tolerate"),
     _("When more than this percentage of frames are not shown, because they "
       "were not scheduled for display in time, xine sends a notification."),
-    20, NULL, NULL);
+    20, video_out_set_warn_discarded_threshold, this);
 
   if (grabonly) {
 
@@ -3327,6 +3455,8 @@ xine_video_port_t *_x_vo_new_port (xine_t *xine, vo_driver_t *driver, int grabon
     xprintf (&this->xine->x, XINE_VERBOSITY_DEBUG, LOG_MODULE ": thread created\n");
 
   }
+
+  vo_update_max_frame_rate (this, this->trigger_drawing.speed);
 
   return &this->vo;
 }

@@ -93,15 +93,15 @@ static inline void xine_gl_extensions_unload (xine_gl_extensions_t *e) {
 
 static inline void xine_gl_extensions_load (xine_gl_extensions_t *e, const char *list) {
   size_t llen;
-  unsigned char *p;
+  unsigned char *p, *d;
 
   e->list = NULL;
   e->buf  = NULL;
   if (!list)
     return;
 
-  llen = strlen (list) + 1;
-  e->buf = malloc (llen);
+  llen = strlen (list);
+  e->buf = malloc (llen + 2);
   /* TJ. I got 298 strings here :-) */
   e->list = xine_sarray_new (1024, (xine_sarray_comparator_t)strcmp);
   if (!e->list || !e->buf) {
@@ -110,15 +110,57 @@ static inline void xine_gl_extensions_load (xine_gl_extensions_t *e, const char 
   }
 
   p = e->buf;
-  memcpy (p, list, llen);
-  while (*p) {
-    unsigned char *q = p;
-    while (*p > ' ')
+  memcpy (p, list, llen + 1);
+  /* safe end plug */
+  d = p + llen;
+  memcpy (d, " 0", 2);
+  while (1) {
+    unsigned char *q;
+    /* skip spaces (simple, there should be just 1). */
+    while (*p <= ' ')
       p++;
-    if (*p)
-      *p++ = 0;
-    if (*q)
-      xine_sarray_add (e->list, q);
+    /* are we done? */
+    if (p >= d)
+      break;
+    q = p;
+    /* find next spc (fast). */
+    {
+      const union {
+        unsigned char *b;
+        uint32_t *u;
+      } u = { p - ((uintptr_t)p & 3) };
+      uint32_t *s = u.u;
+      static const union {
+        uint8_t b[4];
+        uint32_t v;
+      } mask[4] = {
+        {{0xff, 0xff, 0xff, 0xff}},
+        {{0x00, 0xff, 0xff, 0xff}},
+        {{0x00, 0x00, 0xff, 0xff}},
+        {{0x00, 0x00, 0x00, 0xff}},
+      };
+      static const uint8_t rest[32] = {
+        0, 1, 2, 2, 3, 3, 3, 3, 4, 4, 4, 4, 4, 4, 4, 4, /* big wndian */
+        0, 4, 3, 4, 2, 4, 3, 4, 1, 4, 3, 4, 2, 4, 3, 4  /* little endian */
+      };
+      const union {
+        uint32_t v;
+        uint8_t b[4];
+      } endian = {16};
+      uint32_t w = (~(*s++)) & mask[(uintptr_t)p & 3].v;
+      while (1) {
+        w = w & 0x80808080 & ((w & 0x7f7f7f7f) + 0x21212121);
+        if (w)
+          break;
+        w = ~(*s++);
+      }
+      /* bits 31, 23, 15, 7 -> 3, 2, 1, 0 */
+      w = (w * 0x00204081) & 0xffffffff;
+      w >>= 28;
+      p = (unsigned char *)s - rest[endian.b[0] + w];
+    }
+    *p++ = 0;
+    xine_sarray_add (e->list, q);
   }
 }
 

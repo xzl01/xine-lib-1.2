@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2000-2018 the xine project
+ * Copyright (C) 2000-2023 the xine project
  *
  * This file is part of xine, a free video player.
  *
@@ -101,10 +101,12 @@ static void draw_fftscope(post_plugin_fftscope_t *this, vo_frame_t *frame) {
   float amp_float;
   uint32_t yuy2_pair, yuy2_pair_max, yuy2_white;
   int c_delta;
+  uint32_t *framebase = (uint32_t *)ASSUME_ALIGNED_2 (frame->base[0], 4);
+  const union {uint8_t b[4]; uint32_t w;} black = {{0, 128, 0, 128}};
 
   /* clear the YUY2 map */
   for (i = 0; i < FFT_WIDTH * FFT_HEIGHT / 2; i++)
-    ((uint32_t *)frame->base[0])[i] = be2me_32(0x00900080);
+    framebase[i] = black.w;
 
   /* get a random delta between 1..6 */
   c_delta = (rand() % 6) + 1;
@@ -174,7 +176,7 @@ static void draw_fftscope(post_plugin_fftscope_t *this, vo_frame_t *frame) {
         amp_int = 0;
 
       for (j = 0; j < amp_int; j++, map_ptr -= FFT_WIDTH / 2)
-        ((uint32_t *)frame->base[0])[map_ptr] = yuy2_pair;
+        framebase[map_ptr] = yuy2_pair;
 
       /* amp max */
       yuy2_pair_max = be2me_32(
@@ -209,32 +211,31 @@ static void draw_fftscope(post_plugin_fftscope_t *this, vo_frame_t *frame) {
 
       /* draw peaks */
       for (j = amp_int; j < (amp_max - 1); j++, map_ptr -= FFT_WIDTH / 2)
-        ((uint32_t *)frame->base[0])[map_ptr] = yuy2_pair_max;
+        framebase[map_ptr] = yuy2_pair_max;
 
       /* top */
-      ((uint32_t *)frame->base[0])[map_ptr] = yuy2_white;
+      framebase[map_ptr] = yuy2_white;
 
       /* persistence of top */
       if (this->amp_age[c][i] >= 10) {
         x = this->amp_age[c][i] - 10;
         x = 0x5f - x;
         if (x < 0x10) x = 0x10;
-        ((uint32_t *)frame->base[0])[map_ptr_bkp -
-          this->amp_max[c][i] * (FFT_WIDTH / 2)] =
-            be2me_32((x << 24) | (0x80 << 16) | (x << 8) | 0x80);
+        framebase[map_ptr_bkp - this->amp_max[c][i] * (FFT_WIDTH / 2)] =
+          be2me_32 ((x << 24) | (0x80 << 16) | (x << 8) | 0x80);
       }
     }
   }
 
   /* top line */
   for (map_ptr = 0; map_ptr < FFT_WIDTH / 2; map_ptr++)
-    ((uint32_t *)frame->base[0])[map_ptr] = yuy2_white;
+    framebase[map_ptr] = yuy2_white;
 
   /* lines under each channel */
   for (c = 0; c < this->channels; c++){
     for (i = 0, map_ptr = ((FFT_HEIGHT * (c+1) / this->channels -1 ) * FFT_WIDTH) / 2;
        i < FFT_WIDTH / 2; i++, map_ptr++)
-    ((uint32_t *)frame->base[0])[map_ptr] = yuy2_white;
+    framebase[map_ptr] = yuy2_white;
   }
 
 }

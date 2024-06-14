@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2000-2020 the xine project
+ * Copyright (C) 2000-2022 the xine project
  *
  * This file is part of xine, a free video player.
  *
@@ -537,29 +537,40 @@ static void metronom_set_audio_rate (metronom_t *this_gen, int64_t pts_per_smpls
 
 static int64_t metronom_got_spu_packet (metronom_t *this_gen, int64_t pts) {
   metronom_impl_t *this = (metronom_impl_t *)this_gen;
-  int64_t vpts;
+  int64_t vpts, now;
 
   pthread_mutex_lock (&this->lock);
+  now = this->xine->clock->get_current_time (this->xine->clock);
 
   if (this->master) {
-    this->master->set_option(this->master, METRONOM_LOCK, 1);
 
-    this->vpts_offset = this->master->get_option(this->master, METRONOM_VPTS_OFFSET | METRONOM_NO_LOCK);
-    this->spu.offset  = this->master->get_option(this->master, METRONOM_SPU_OFFSET | METRONOM_NO_LOCK);
+    this->master->set_option (this->master, METRONOM_LOCK, 1);
+    this->vpts_offset = this->master->get_option (this->master, METRONOM_VPTS_OFFSET | METRONOM_NO_LOCK);
+    this->spu.offset  = this->master->get_option (this->master, METRONOM_SPU_OFFSET | METRONOM_NO_LOCK);
+    this->master->set_option (this->master, METRONOM_LOCK, 0);
+    vpts = pts + this->vpts_offset;
+
+  } else {
+
+    /* bounce compensation */
+    int64_t vpts1 = pts + this->vpts_offset, vpts2 = vpts1 + this->bounce.diff;
+    int64_t d1 = vpts1 - now, d2 = vpts2 - now;
+    if (d1 < 0)
+      d1 = -d1;
+    if (d2 < 0)
+      d2 = -d2;
+    vpts = d1 < d2 ? vpts1 : vpts2;
+
   }
 
-  vpts = pts + this->vpts_offset + this->spu.offset;
-
-  /* no vpts going backwards please */
-  if( vpts < this->spu.vpts )
-    vpts = this->spu.vpts;
-
+  /* reset bogus vaöues */
+  if ((vpts < now) || (vpts > now + 15 * 90000))
+    vpts = now;
+  /* apply user shift */
+  vpts += this->spu.offset;
+  /* NOTE: vpts here may jitter backwards a bit (depending on spu codec).
+   * overlay.c will sort this away later. */
   this->spu.vpts = vpts;
-
-  if (this->master) {
-    this->master->set_option(this->master, METRONOM_LOCK, 0);
-  }
-
   pthread_mutex_unlock (&this->lock);
   return vpts;
 }

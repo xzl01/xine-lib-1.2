@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2007-2018 the xine project
+ * Copyright (C) 2007-2022 the xine project
  *
  * This file is part of xine, a free video player.
  *
@@ -39,5 +39,13 @@ void _x_spu_get_opacity (xine_t *, xine_spu_opacity_t *) XINE_PROTECTED;
  * out:         0..255, 0=transparent
  */
 int _x_spu_calculate_opacity (const clut_t *, uint8_t trans, const xine_spu_opacity_t *) XINE_PROTECTED;
+
+/** @brief (re)calculate DVB subtitle opacity table if needed.
+ *  @param xine pointer to the xine instance.
+ *  @param opacity pointer to an array of 0...15 opacity values to fill in for each color.
+ *  @param clut pointer to an array of colors, with .foo set to 0...255 transparency value.
+ *  @param gen pointer to an int that you set to 0 initially, and when colors have changed.
+ *  @param n count of colors. */
+void _x_spu_dvb_opacity (xine_t *xine, uint8_t *opacity, const clut_t *clut, int *gen, uint32_t n) XINE_PROTECTED;
 
 #endif

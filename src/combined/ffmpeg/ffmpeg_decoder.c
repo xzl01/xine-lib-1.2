@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2001-2020 the xine project
+ * Copyright (C) 2001-2022 the xine project
  *
  * This file is part of xine, a free video player.
  *
@@ -26,12 +26,20 @@
 
 #include <pthread.h>
 
-#ifdef HAVE_FFMPEG_AVUTIL_H
-#  include <avcodec.h>
-#else
-#  include <libavcodec/avcodec.h>
+#if defined(HAVE_LIBAVUTIL_AVUTIL_H)
+#  include <libavutil/avutil.h>
+#endif
+
+#if defined(HAVE_LIBAVUTIL_MEM_H)
 #  include <libavutil/mem.h>
 #endif
+
+#if defined(HAVE_AVUTIL_AVCODEC_H)
+#  include <libavcodec/avcodec.h>
+#else
+#  include <avcodec.h>
+#endif
+
 #ifdef HAVE_AVFORMAT
 #  include <libavformat/avformat.h> // av_register_all()
 #endif
@@ -90,7 +98,7 @@ static const input_info_t input_info_avformat = {
 };
 
 static const demuxer_info_t demux_info_avformat = {
-  .priority = -1,
+  .priority = -2,
 };
 #endif /* HAVE_AVFORMAT */
 

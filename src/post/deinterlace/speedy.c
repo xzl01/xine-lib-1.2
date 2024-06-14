@@ -1217,7 +1217,7 @@ static void interpolate_packed422_scanline_mmxext( uint8_t *output, uint8_t *top
 static void blit_colour_packed422_scanline_c( uint8_t *output, int width, int y, int cb, int cr )
 {
     uint32_t colour = cr << 24 | y << 16 | cb << 8 | y;
-    uint32_t *o = (uint32_t *) output;
+    uint32_t *o = (uint32_t *)ASSUME_ALIGNED_2 (output, 4);
 
     for( width /= 2; width; --width ) {
         *o++ = colour;
@@ -1347,7 +1347,8 @@ static void blit_colour_packed4444_scanline_mmx( uint8_t *output, int width,
     width = (width & 0x1);
 
     if( width ) {
-        *((uint32_t *) output) = colour;
+        uint32_t *d = (uint32_t *)ASSUME_ALIGNED_2 (output, 4);
+        *d = colour;
         output += 4;
     }
 
@@ -1384,7 +1385,8 @@ static void blit_colour_packed4444_scanline_mmxext( uint8_t *output, int width,
     width = (width & 0x1);
 
     if( width ) {
-        *((uint32_t *) output) = colour;
+        uint32_t *d = (uint32_t *)ASSUME_ALIGNED_2 (output, 4);
+        *d = colour;
         output += 4;
     }
 
@@ -1733,18 +1735,18 @@ static void composite_alphamask_to_packed4444_scanline_c( uint8_t *output,
 
     for( i = 0; i < width; i++ ) {
         int a = *mask;
+        uint32_t *d = (uint32_t *)ASSUME_ALIGNED_2 (output, 4);
 
         if( a == 0xff ) {
-            *((uint32_t *) output) = opaque;
+            *d = opaque;
         } else if( input[ 0 ] == 0x00 ) {
-            *((uint32_t *) output) = (multiply_alpha( a, textcr ) << 24)
-                                       | (multiply_alpha( a, textcb ) << 16)
-                                       | (multiply_alpha( a, textluma ) << 8) | a;
+            *d = (multiply_alpha (a, textcr) << 24) | (multiply_alpha( a, textcb) << 16)
+                | (multiply_alpha( a, textluma ) << 8) | a;
         } else if( a ) {
-            *((uint32_t *) output) = ((input[ 3 ] + multiply_alpha( a, textcr - input[ 3 ] )) << 24)
-                                       | ((input[ 2 ] + multiply_alpha( a, textcb - input[ 2 ] )) << 16)
-                                       | ((input[ 1 ] + multiply_alpha( a, textluma - input[ 1 ] )) << 8)
-                                       |  (input[ 0 ] + multiply_alpha( a, 0xff - input[ 0 ] ));
+            *d =  ((input[3] + multiply_alpha (a, textcr - input[3])) << 24)
+                | ((input[2] + multiply_alpha (a, textcb - input[2])) << 16)
+                | ((input[1] + multiply_alpha (a, textluma - input[1])) << 8)
+                |  (input[0] + multiply_alpha (a, 0xff - input[0]));
         }
         mask++;
         output += 4;
@@ -1786,7 +1788,8 @@ static void composite_alphamask_to_packed4444_scanline_mmxext( uint8_t *output,
         int a = *mask;
 
         if( a == 0xff ) {
-            *((uint32_t *) output) = opaque;
+            uint32_t *d = (uint32_t *)ASSUME_ALIGNED_2 (output, 4);
+            *d = opaque;
         } else if( input[ 0 ] == 0x00 ) {
             /* We just need to multiply our colour by the alpha value. */
 
@@ -1865,18 +1868,18 @@ static void composite_alphamask_alpha_to_packed4444_scanline_c( uint8_t *output,
 
         if( af ) {
            int a = ((af * alpha) + 0x80) >> 8;
+            uint32_t *d = (uint32_t *)ASSUME_ALIGNED_2 (output, 4);
 
            if( a == 0xff ) {
-               *((uint32_t *) output) = opaque;
+               *d = opaque;
            } else if( input[ 0 ] == 0x00 ) {
-               *((uint32_t *) output) = (multiply_alpha( a, textcr ) << 24)
-                                          | (multiply_alpha( a, textcb ) << 16)
-                                          | (multiply_alpha( a, textluma ) << 8) | a;
+               *d = (multiply_alpha (a, textcr) << 24) | (multiply_alpha (a, textcb) << 16)
+                    | (multiply_alpha (a, textluma) << 8) | a;
            } else if( a ) {
-               *((uint32_t *) output) = ((input[ 3 ] + multiply_alpha( a, textcr - input[ 3 ] )) << 24)
-                                         | ((input[ 2 ] + multiply_alpha( a, textcb - input[ 2 ] )) << 16)
-                                         | ((input[ 1 ] + multiply_alpha( a, textluma - input[ 1 ] )) << 8)
-                                         | (a + multiply_alpha( 0xff - a, input[ 0 ] ));
+               *d = ((input[3] + multiply_alpha (a, textcr - input[3])) << 24)
+                    | ((input[2] + multiply_alpha (a, textcb - input[2])) << 16)
+                    | ((input[1] + multiply_alpha (a, textluma - input[1])) << 8)
+                    | (a + multiply_alpha (0xff - a, input[0]));
            }
         }
         mask++;
@@ -1887,15 +1890,16 @@ static void composite_alphamask_alpha_to_packed4444_scanline_c( uint8_t *output,
 
 static void premultiply_packed4444_scanline_c( uint8_t *output, uint8_t *input, int width )
 {
+    uint32_t *d = (uint32_t *)ASSUME_ALIGNED_2 (output, 4);
+
     while( width-- ) {
         unsigned int cur_a = input[ 0 ];
 
-        *((uint32_t *) output) = (multiply_alpha( cur_a, input[ 3 ] ) << 24)
-                               | (multiply_alpha( cur_a, input[ 2 ] ) << 16)
-                               | (multiply_alpha( cur_a, input[ 1 ] ) << 8)
-                               | cur_a;
+        *d = (multiply_alpha (cur_a, input[3]) << 24)
+           | (multiply_alpha (cur_a, input[2]) << 16)
+           | (multiply_alpha (cur_a, input[1]) << 8) | cur_a;
 
-        output += 4;
+        d += 1;
         input += 4;
     }
 }

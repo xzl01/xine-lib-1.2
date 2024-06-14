@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2012-2019 the xine project
+ * Copyright (C) 2012-2022 the xine project
  * Copyright (C) 2012 Christophe Thommeret <hftom@free.fr>
  * Copyright (C) 2012-2019 Petri Hintukainen <phintuka@users.sourceforge.net>
  *

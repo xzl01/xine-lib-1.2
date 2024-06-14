@@ -1,0 +1,11 @@
+xine-lib-1.2 source: source-contains-prebuilt-windows-binary [contrib/libdha/bin/mapdev.vxd]
+xine-lib-1.2 source: very-long-line-length-in-source-file *
+xine-lib-1.2 source: upstream-metadata-file-is-missing
+xine-lib-1.2 source: debian-watch-does-not-check-openpgp-signature [debian/watch]
+xine-lib-1.2 source: dependency-is-not-multi-archified libxine2 depends on libxine2-bin (multi-arch: no)
+xine-lib-1.2 source: dependency-is-not-multi-archified libxine2-console depends on libxine2-bin (multi-arch: no)
+xine-lib-1.2 source: dependency-is-not-multi-archified libxine2-dev depends on libxine2-bin (multi-arch: no)
+xine-lib-1.2 source: dependency-is-not-multi-archified libxine2-ffmpeg depends on libxine2-bin (multi-arch: no)
+xine-lib-1.2 source: dependency-is-not-multi-archified libxine2-misc-plugins depends on libxine2-bin (multi-arch: no)
+xine-lib-1.2 source: dependency-is-not-multi-archified libxine2-vdr depends on libxine2-bin (multi-arch: no)
+xine-lib-1.2 source: dependency-is-not-multi-archified libxine2-x depends on libxine2-bin (multi-arch: no)

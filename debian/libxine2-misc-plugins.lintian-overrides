@@ -1,0 +1,1 @@
+libxine2-misc-plugins: hardening-no-fortify-functions [usr/lib/*/xine/plugins/*/xineplug_ao_out_alsa.so]

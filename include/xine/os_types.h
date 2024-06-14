@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2009 the xine project
+ * Copyright (C) 2004-2022 the xine project
  *
  * This file is part of xine, a free video player.
  *
@@ -38,6 +38,8 @@
    typedef unsigned __int32 uint32_t;
    typedef __int64 int64_t;
    typedef unsigned __int64 uint64_t;
+   typedef __int32 intptr_t;
+   typedef unsigned __int32 uintptr_t;
 
 #elif defined(__MACOS__)
 
@@ -50,6 +52,8 @@
    typedef UInt32 uint32_t;
    typedef SInt64 int64_t;
    typedef UInt64 uint64_t;
+   typedef SInt32 intptr_t;
+   typedef UInt32 uintptr_t;
 
 #elif defined(__MACOSX__) /* MacOS X Framework build */
 
@@ -69,7 +73,9 @@
    typedef int int32_t;
    typedef unsigned int uint32_t;
    typedef long long int64_t;
-   typedef unsigned long long int64_t;
+   typedef unsigned long long uint64_t;
+   typedef long intptr_t;
+   typedef unsigned long uintptr_t;
 
 #elif defined (DJGPP)
 
@@ -82,6 +88,8 @@
    typedef unsigned int uint32_t;
    typedef long long int64_t;
    typedef unsigned long long uint64_t;
+   typedef long intptr_t;
+   typedef unsigned long uintptr_t;
 
 #elif defined(R5900)
 
@@ -93,7 +101,10 @@
    typedef int int32_t;
    typedef unsigned uint32_t;
    typedef long int64_t;
-   typedef unsigned long int64_t;
+   typedef unsigned long uint64_t;
+   /* FIXME: 32bit? */
+   typedef long intptr_t;
+   typedef unsigned long uintptr_t;
 
 #else
 

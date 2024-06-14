@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2000-2018 the xine project
+ * Copyright (C) 2000-2022 the xine project
  *
  * This file is part of xine, a free video player.
  *
@@ -65,12 +65,12 @@ video_overlay_manager_t *_x_video_overlay_new_manager(xine_t *) XINE_MALLOC XINE
 
 /* Transport color matrix setting inside those unused "foo" fields.
    Guard against uninitialized values. */
-#define _X_SET_CLUT_CM(clut,color_matrix) { \
-  uint8_t *q = (uint8_t *)clut; \
+#define _X_SET_CLUT_CM(_clut,_color_matrix) { \
+  uint8_t *q = (uint8_t *)(_clut); \
   q[3]  = 'X'; \
   q[7]  = 'C'; \
   q[11] = 'M'; \
-  q[15] = color_matrix; \
+  q[15] = _color_matrix; \
 }
 
 void _x_overlay_clut_yuv2rgb(vo_overlay_t *overlay, int video_color_matrix) XINE_PROTECTED;

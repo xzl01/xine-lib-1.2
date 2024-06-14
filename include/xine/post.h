@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2000-2018 the xine project
+ * Copyright (C) 2000-2023 the xine project
  *
  * This file is part of xine, a free video player.
  *
@@ -285,12 +285,19 @@ static inline post_video_port_t *_x_post_video_frame_to_port(vo_frame_t *frame) 
 }
 
 static inline post_video_port_t *_x_post_ovl_manager_to_port(video_overlay_manager_t *manager) {
+  /* NOTE: assuming that manager really is a post_video_port->manager_storage.
+   * Furthermore, try to avoid cast-align warnings. */
+  post_video_port_t *res;
+  uint32_t n;
 #ifdef POST_INTERNAL
-  return (post_video_port_t *)( (uint8_t *)manager -
-    (uint8_t*)&(((post_video_port_t *)NULL)->manager_storage) );
+  post_video_port_t *dummy = (post_video_port_t *)0;
+  n = (uintptr_t)(&dummy->manager_storage);
 #else
-  return (post_video_port_t *)( (uint8_t *)manager - sizeof(post_video_port_t) );
+  n = sizeof (post_video_port_t);
 #endif
+  n /= sizeof (void *);
+  res = (post_video_port_t *)((void **)manager - n);
+  return res->new_manager == manager ? res : NULL;
 }
 
 

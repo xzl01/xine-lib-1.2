@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2000-2021 the xine project
+ * Copyright (C) 2000-2023 the xine project
  *
  * This file is part of xine, a free video player.
  *
@@ -325,7 +325,8 @@ int  xine_get_param (xine_stream_t *stream, int param) XINE_PROTECTED;
 #define XINE_PARAM_AUDIO_CHANNEL_LOGICAL   3 /* -1 => auto, -2 => off       */
 #define XINE_PARAM_SPU_CHANNEL             4
 #define XINE_PARAM_VIDEO_CHANNEL           5
-#define XINE_PARAM_AUDIO_VOLUME            6 /* 0..100                      */
+#define XINE_PARAM_AUDIO_VOLUME            6 /* 0..100 % of current audio out mixer range
+(eg alsa emu10k1 master: -46dB..0dB. */
 #define XINE_PARAM_AUDIO_MUTE              7 /* 1=>mute, 0=>unmute          */
 #define XINE_PARAM_AUDIO_COMPR_LEVEL       8 /* <100=>off, % compress otherw*/
 #define XINE_PARAM_AUDIO_AMP_LEVEL         9 /* 0..200, (val - 100) / 2 dB, 100 = default */
@@ -988,8 +989,13 @@ int xine_get_spu_lang   (xine_stream_t *stream, int channel,
  * some or all of this information may be unavailable or incorrect
  * (e.g. live network streams may not have a valid length)
  *
- * returns 1 on success, 0 on failure (data was not updated,
- * probably because it's not known yet... try again later)
+ * return:
+ * 2: still playing the tail of the previous stream before
+ *    a pending gapless switch, info is valid for that
+ *    (libxine 1.2.14+):
+ * 1: success,
+ * 0: failure (data was not updated, probably because
+ *    it's not known yet... try again later).
  */
 int  xine_get_pos_length (xine_stream_t *stream,
 			  int *pos_stream,  /* 0..65535     */
@@ -1006,6 +1012,17 @@ int  xine_get_pos_length (xine_stream_t *stream,
  */
 uint32_t    xine_get_stream_info (xine_stream_t *stream, int info) XINE_PROTECTED;
 const char *xine_get_meta_info   (xine_stream_t *stream, int info) XINE_PROTECTED;
+#define XINE_QUERY_STREAM_INFO 1
+/** @brief query multiple stream props, thread safe and consistently.
+ *  @param stream  the xine stream to query.
+ *  @param sbuf    the buffer to write string copies to. sbuf[0] will be set to 0.
+ *  @param sblen   the byte size of sbuf.
+ *  @param strings input: -1 terminated list of XINE_META_INFO_*.
+ *                 output: list of offsets into sbuf or 0 for NULL strings.
+ *  @param ints    input: -1 terminated list of XINE_STREAM_INFO_*.
+ *                 output: list of values or 0 where not set or found.
+ *  @return        the count of bytes used in sbuf. */
+int xine_query_stream_info (xine_stream_t *stream, char *sbuf, size_t sblen, int *strings, int *ints) XINE_PROTECTED;
 
 /* xine_get_stream_info */
 #define XINE_STREAM_INFO_BITRATE           0

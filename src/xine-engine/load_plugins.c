@@ -106,8 +106,10 @@ static void remove_segv_handler(void){
 #endif
 #endif /* 0 */
 
-#define CACHE_CATALOG_VERSION 4
-#define CACHE_CATALOG_VERSION_STR "4"
+#define CACHE_CATALOG_VERSION 5
+#define CACHE_CATALOG_VERSION_STR "5"
+
+#define MAX_DUPL_CFG_ENTRIES 256
 
 #define __Max(a,b) ((a) > (b) ? (a) : (b))
 static const uint8_t plugin_iface_versions[__Max(PLUGIN_TYPE_MAX, PLUGIN_XINE_MODULE) + 1] = {
@@ -137,6 +139,8 @@ typedef struct fat_node_st {
   plugin_info_t  info[2];
   all_info_t     ainfo;
   plugin_file_t  file;
+#define FAT_NODE_FLAG_PROBE_CLASS 1
+  uint32_t       flags;
   struct fat_node_st *nextplugin, *lastplugin;
   xine_t        *xine;
   uint32_t       supported_types[1];
@@ -168,6 +172,7 @@ static void _fat_node_init (fat_node_t *node) {
   node->info[1].type         = 0;
   node->ainfo.decoder_info.supported_types = NULL;
   node->ainfo.decoder_info.priority        = 0;
+  node->flags            = 0;
   node->file.filename    = NULL;
   node->file.filesize    = 0;
   node->file.filemtime   = 0;
@@ -289,12 +294,10 @@ static const char * const *_build_list_typed_plugins (xine_t *xine, int type, ui
   if (type == PLUGIN_VIDEO_OUT) {
     for (list_id = 0, i = 0; list_id < list_size; list_id++) {
       plugin_node_t *node = xine_sarray_get (list, list_id);
-      if (node->info) {
-        const vo_info_t *info = (const vo_info_t *)node->info->special_info;
-        if (info) {
-          if (!(mask & ((uint64_t)1 << info->visual_type)))
-            continue;
-        }
+      const vo_info_t *info = (const vo_info_t *)node->info->special_info;
+      if (info) {
+        if (!(mask & ((uint64_t)1 << info->visual_type)))
+          continue;
       }
       /* add only unique ids to the list */
       if (xine_sarray_add (a, (void *)node->info->id) >= 0)
@@ -491,8 +494,7 @@ static plugin_file_t *_insert_file (xine_list_t *list, const char *filename,
   return entry;
 }
 
-static int _insert_node (xine_t *this, plugin_file_t *file, fat_node_t *node_cache, const plugin_info_t *info) {
-
+static int _insert_node (xine_t *this, plugin_file_t *file, fat_node_t *node_cache, const plugin_info_t *info, uint32_t flags) {
   fat_node_t       *entry;
   const all_info_t *ainfo;
   unsigned int num_supported_types = 0;
@@ -571,7 +573,7 @@ static int _insert_node (xine_t *this, plugin_file_t *file, fat_node_t *node_cac
   if (node_cache) {
     entry = node_cache;
   } else {
-    size_t idlen = strlen (info->id) + 1;
+    size_t idlen = xine_find_byte (info->id, 0) + 1;
     char *q;
     entry = malloc (sizeof (*entry) + num_supported_types * sizeof (uint32_t) + idlen);
     if (!entry)
@@ -579,6 +581,7 @@ static int _insert_node (xine_t *this, plugin_file_t *file, fat_node_t *node_cac
     _fat_node_init (entry);
     entry->node.info  = &entry->info[0];
     entry->info[0]    = *info;
+    entry->flags      = flags;
     q = (char *)entry + sizeof (*entry) + num_supported_types * sizeof (uint32_t);
     entry->info[0].id = q;
     xine_small_memcpy (q, info->id, idlen);
@@ -593,10 +596,12 @@ static int _insert_node (xine_t *this, plugin_file_t *file, fat_node_t *node_cac
   case PLUGIN_VIDEO_OUT:
     entry->node.priority = entry->ainfo.vo_info.priority = ainfo->vo_info.priority;
     entry->ainfo.vo_info.visual_type = ainfo->vo_info.visual_type;
+    entry->flags &= ~FAT_NODE_FLAG_PROBE_CLASS;
     break;
 
   case PLUGIN_AUDIO_OUT:
     entry->node.priority = entry->ainfo.ao_info.priority = ainfo->ao_info.priority;
+    entry->flags &= ~FAT_NODE_FLAG_PROBE_CLASS;
     break;
 
   case PLUGIN_AUDIO_DECODER:
@@ -609,15 +614,14 @@ static int _insert_node (xine_t *this, plugin_file_t *file, fat_node_t *node_cac
 
     {
       /* cnfig does dup all strings. no need to keep them here. */
+      xine_private_t *_xine = (xine_private_t *)this;
       char key[128], desc[256];
       int user_prio;
-      snprintf (key, sizeof (key) - 1, "engine.decoder_priorities.%s", info->id);
+      memcpy (key, "engine.decoder_priorities.", 26);
+      strlcpy (key + 26, info->id, sizeof (key) - 26);
       snprintf (desc, sizeof (desc) - 1, _("priority for %s decoder"), info->id);
       user_prio = this->config->register_num (this->config, key, 0, desc,
-        _("The priority provides a ranking in case some media "
-          "can be handled by more than one decoder.\n"
-          "A priority of 0 enables the decoder's default priority."), 20,
-        _decoder_priority_cb, entry);
+        _xine->strings.decoder_pri_help, 20, _decoder_priority_cb, entry);
       /* reset priority on old config files */
       if (this->config->current_version < 1) {
         this->config->update_num (this->config, key, 0);
@@ -657,9 +661,11 @@ static int _insert_node (xine_t *this, plugin_file_t *file, fat_node_t *node_cac
       entry->node.priority = entry->ainfo.input_info.priority = 0;
     }
     break;
+
   case PLUGIN_XINE_MODULE:
     entry->node.priority = ainfo->module_info.priority;
     entry->ainfo.module_info = ainfo->module_info;
+    entry->flags &= ~FAT_NODE_FLAG_PROBE_CLASS;
     break;
   }
   entry->info[0].special_info = &entry->ainfo;
@@ -737,7 +743,7 @@ static plugin_catalog_t *_new_catalog(void){
 }
 
 static void _register_plugins_internal (xine_t *this, plugin_file_t *file,
-  fat_node_t *node_cache, const plugin_info_t *info) {
+  fat_node_t *node_cache, const plugin_info_t *info, uint32_t flags) {
   /* user supplied xine_register_plugins () */
   static const char * const st_names[10] = {
     "user/none",
@@ -784,9 +790,9 @@ static void _register_plugins_internal (xine_t *this, plugin_file_t *file,
       fn = names[n];
     }
     xine_log (this, XINE_LOG_PLUGIN, _("load_plugins: plugin %s:%s found\n"), fn, info->id);
-    status = _insert_node (this, file, node_cache, info);
+    status = _insert_node (this, file, node_cache, info, flags);
     /* get next info */
-    if( file && !file->lib_handle ) {
+    if (file && !file->lib_handle) {
       lprintf("get cached info\n");
       if (status)
         free (node_cache);
@@ -800,7 +806,7 @@ static void _register_plugins_internal (xine_t *this, plugin_file_t *file,
 
 void xine_register_plugins(xine_t *self, const plugin_info_t *info) {
   if (self)
-    _register_plugins_internal (self, NULL, NULL, info);
+    _register_plugins_internal (self, NULL, NULL, info, 0);
 }
 
 /*
@@ -930,7 +936,7 @@ static void collect_plugins (xine_t *this, char *path, char *stop, char *pend) {
 
               file = _insert_file (this->plugin_catalog->file_list, path, &statbuf, lib, q - path);
               if (file) {
-                _register_plugins_internal (this, file, fatn_found, info);
+                _register_plugins_internal (this, file, fatn_found, info, fatn_found ? 0 : FAT_NODE_FLAG_PROBE_CLASS);
               } else {
                 if (lib != NULL)
                   dlclose(lib);
@@ -998,6 +1004,7 @@ static inline int _plugin_info_equal(const plugin_info_t *a,
 typedef struct {
   config_values_t *v;
   plugin_node_t   *node;
+  cfg_entry_t     *cfg_entry;
 } new_entry_data_t;
 #else
 static void _attach_entry_to_node (plugin_node_t *node, char *key) {
@@ -1020,7 +1027,7 @@ static void _new_entry_cb (void *user_data, xine_cfg_entry_t *entry) {
   if (!d->node->config_entry_list)
     d->node->config_entry_list = xine_list_new ();
   if (d->node->config_entry_list && d->v->cur && !xine_list_find (d->node->config_entry_list, d->v->cur))
-    xine_list_push_back (d->node->config_entry_list, d->v->cur);
+    d->cfg_entry = d->v->cur, xine_list_push_back (d->node->config_entry_list, d->v->cur);
   (void)entry;
 #else
   plugin_node_t *node = (plugin_node_t *)user_data;
@@ -1164,28 +1171,35 @@ static void _load_required_plugins(xine_t *this, xine_sarray_t *list) {
 
   list_size = xine_sarray_size(list);
   while (list_id < list_size) {
-    plugin_node_t *node = xine_sarray_get(list, list_id);
+    fat_node_t *node = xine_sarray_get (list, list_id);
+    uint32_t flags = IS_FAT_NODE (node) ? node->flags : 0;
 
     /*
      * preload plugins if not cached
      */
     do {
-      if (!(node->info->type & PLUGIN_MUST_PRELOAD)) /* no preload needed */
+      if (!((node->node.info->type & PLUGIN_MUST_PRELOAD) | (flags & FAT_NODE_FLAG_PROBE_CLASS))) /* no preload needed */
         break;
-      if (node->plugin_class) /* is already loaded */
+      if (node->node.plugin_class) /* is already loaded */
         break;
-      if (node->file && !node->file->lib_handle) /* lib unavailable */
+      if (node->node.file && !node->node.file->lib_handle) /* lib unavailable */
         break;
 
-      lprintf ("preload plugin %s from %s\n", node->info->id, node->file ? node->file->filename : "libxine/builtins");
+      lprintf ("preload plugin %s from %s\n", node->node.info->id, node->node.file ? node->node.file->filename : "libxine/builtins");
 
-      if (! _load_plugin_class (this, node, NULL)) {
+      if (!_load_plugin_class (this, &node->node, NULL)) {
 	/* in case of failure remove from list */
 
 	xine_sarray_remove(list, list_id);
 	list_size = xine_sarray_size(list);
         list_id--;
+        break;
       }
+
+      if (node->node.info->type & PLUGIN_MUST_PRELOAD)
+        break;
+
+      _dispose_plugin_class (&node->node);
     } while (0);
     list_id++;
   }
@@ -1199,16 +1213,33 @@ static void load_required_plugins(xine_t *this) {
   }
 }
 
+static unsigned int _cfg_entry_hash (void *a) {
+  char **d = (char **)a;
+  return ((uintptr_t)(*d) >> 4) & 127;
+}
+
+static int _cfg_entry_cmp (void *a, void *b) {
+  char **d = (char **)a, **e = (char **)b;
+  return *d < *e ? -1 : *d > *e ? 1 : 0;
+}
+
 /*
  *  save plugin list information to file (cached catalog)
  */
-static void save_plugin_list(xine_t *this, FILE *fp, xine_sarray_t *list) {
+typedef struct {
+  xine_sarray_t *list;
+  cfg_entry_t *entries[MAX_DUPL_CFG_ENTRIES];
+  uint32_t have;
+} _load_plugins_dupl_cfg_t;
 
+static void save_plugin_list (xine_t *this, FILE *fp, xine_sarray_t *list, _load_plugins_dupl_cfg_t *cfg) {
   int list_id = 0;
   int list_size;
 #define SAVE_PLUGIN_BUF_SIZE 4096
   char b[SAVE_PLUGIN_BUF_SIZE];
   char *e = b + SAVE_PLUGIN_BUF_SIZE - 78 - 2 * XINE_MAX_INT64_STR - 5 * XINE_MAX_INT32_STR;
+  const plugin_file_t *last_file = (const plugin_file_t *)1;
+  uint32_t last_type = ~0u, last_api = ~0u, last_vers = ~0u;
 
   list_size = xine_sarray_size (list);
   while (list_id < list_size) {
@@ -1216,30 +1247,47 @@ static void save_plugin_list(xine_t *this, FILE *fp, xine_sarray_t *list) {
     char *q = b;
     const plugin_node_t *node = xine_sarray_get (list, list_id);
     const plugin_file_t *file = node->file;
-    if (file) {
-      *q++ = '[';
-      q += strlcpy (q, file->filename, e - q);
-      if (q >= e)
-        q = e - 1;
-      memcpy (q, "]\nsize=", 7); q += 7;
-      xine_uint2str (&q, file->filesize);
-      memcpy (q, "\nmtime=", 7); q += 7;
-      xine_uint2str (&q, file->filemtime);
-      *q++ = '\n';
-    } else {
-      /* dump builtins for debugging */
-      memcpy (q, "[libxine/builtins]\n", 20); q += 19;
+    if (file != last_file) {
+      last_file = file;
+      last_type = last_api = last_vers = ~0u;
+      if (file) {
+        *q++ = '[';
+        q += strlcpy (q, file->filename, e - q);
+        if (q >= e)
+          q = e - 1;
+        memcpy (q, "]\nsize=", 7); q += 7;
+        xine_uint2str (&q, file->filesize);
+        memcpy (q, "\nmtime=", 7); q += 7;
+        xine_uint2str (&q, file->filemtime);
+        *q++ = '\n';
+      } else {
+        /* dump builtins for debugging */
+        memcpy (q, "[libxine/builtins]\n", 20); q += 19;
+      }
     }
-    memcpy (q, "type=", 5); q += 5;
-    xine_uint32_2str (&q, node->info->type);
-    memcpy (q, "\napi=", 5); q += 5;
-    xine_uint32_2str (&q, node->info->API);
-    memcpy (q, "\nid=", 4); q += 4;
+    if (node->info->type != last_type) {
+      last_type = node->info->type;
+      last_api = last_vers = ~0u;
+      memcpy (q, "type=", 5); q += 5;
+      xine_uint32_2str (&q, node->info->type);
+      *q++ = '\n';
+    }
+    if (node->info->API != last_api) {
+      last_api = node->info->API;
+      memcpy (q, "api=", 4); q += 4;
+      xine_uint32_2str (&q, node->info->API);
+      *q++ = '\n';
+    }
+    if (node->info->version != last_vers) {
+      last_vers = node->info->version;
+      memcpy (q, "version=", 8); q += 8;
+      xine_uint32_2str (&q, node->info->version);
+      *q++ = '\n';
+    }
+    memcpy (q, "id=", 3); q += 3;
     q += strlcpy (q, node->info->id, e - q);
     if (q >= e)
       q = e - 1;
-    memcpy (q, "\nversion=", 9); q += 9;
-    xine_uint32_2str (&q, node->info->version);
     *q++ = '\n';
 
     switch (node->info->type & PLUGIN_TYPE_MASK){
@@ -1299,7 +1347,7 @@ static void save_plugin_list(xine_t *this, FILE *fp, xine_sarray_t *list) {
       }
       case PLUGIN_XINE_MODULE: {
         const xine_module_info_t *module_info = node->info->special_info;
-        size_t type_len = strlen(module_info->type);
+        size_t type_len = xine_find_byte (module_info->type, 0);
         memcpy (q, "module_type=", 12); q += 12;
         memcpy (q, module_info->type, type_len); q += type_len;
         memcpy (q, "\nmodule_sub_type=", 17); q += 17;
@@ -1325,6 +1373,20 @@ static void save_plugin_list(xine_t *this, FILE *fp, xine_sarray_t *list) {
       while ((entry = xine_list_next_value (node->config_entry_list, &ite))) {
         char *key_value;
 #ifdef FAST_SCAN_PLUGINS
+        if (cfg->have < MAX_DUPL_CFG_ENTRIES) {
+          int cfg_index;
+          cfg->entries[cfg->have] = entry;
+          cfg_index = xine_sarray_add (cfg->list, cfg->entries + cfg->have);
+          if (cfg_index < 0) {
+            char b2[80], *q = b2;
+            memcpy (q, "config_key=[", 12); q += 12;
+            xine_uint32_2str (&q, (cfg_entry_t **)xine_sarray_get (cfg->list, ~cfg_index) - cfg->entries);
+            memcpy (q, "]\n", 2); q += 2;
+            fwrite (b2, 1, q - b2, fp);
+            continue;
+          }
+          cfg->have++;
+        }
         pthread_mutex_lock (&this->config->config_lock);
         this->config->cur = entry;
         key_value = this->config->get_serialized_entry (this->config, NULL);
@@ -1334,7 +1396,7 @@ static void save_plugin_list(xine_t *this, FILE *fp, xine_sarray_t *list) {
         key_value = this->config->get_serialized_entry (this->config, entry);
 #endif
         if (key_value) {
-          size_t slen = strlen (key_value);
+          size_t slen = xine_find_byte (key_value, 0);
 #ifdef FAST_SCAN_PLUGINS
           lprintf ("  config key: %s, serialization: %zu bytes\n", entry->key, slen);
 #else
@@ -1356,13 +1418,124 @@ static void save_plugin_list(xine_t *this, FILE *fp, xine_sarray_t *list) {
 /*
  *  load plugin list information from file (cached catalog)
  */
-static void load_plugin_list (xine_t *this, const char *filename, xine_sarray_t *plugins) {
+typedef enum {
+  _K_NONE = 0,
+  _K_cache_catalog_version,
+  _K_flush,
+  _K_filename,
+  _K_size,
+  _K_mtime,
+  _K_type,
+  _K_api,
+  _K_id,
+  _K_version,
+  _K_visual_type,
+  _K_supported_types,
+  _K_vo_priority,
+  _K_ao_priority,
+  _K_decoder_priority,
+  _K_demuxer_priority,
+  _K_input_priority,
+  _K_post_type,
+  _K_config_key,
+  _K_module_priority,
+  _K_module_sub_type,
+  _K_module_type,
+  _K_LAST
+} _k_t;
 
-  fat_node_t node; /** << node.file.filename is not a xine_fast_string_t, never passed there. */
+static _k_t _key_2_index (const char *key, size_t klen) {
+  switch (klen) {
+    int d;
+    case 0:
+      return _K_flush;
+    case 2:
+      if (!memcmp (key, "id", 2))
+        return _K_id;
+      break;
+    case 3:
+      if (!memcmp (key, "api", 3))
+        return _K_api;
+      break;
+    case 4:
+      if (!memcmp (key, "size", 4))
+        return _K_size;
+      if (!memcmp (key, "type", 4))
+        return _K_type;
+      break;
+    case 5:
+      if (!memcmp (key, "mtime", 5))
+        return _K_mtime;
+      break;
+    case 7:
+      if (!memcmp (key, "version", 7))
+        return _K_version;
+      break;
+    case 9:
+      if (!memcmp (key, "post_type", 9))
+        return _K_post_type;
+      break;
+    case 10:
+      if (!memcmp (key, "config_key", 10))
+        return _K_config_key;
+      break;
+    case 11:
+      d = memcmp (key, "module_type", 11);
+      if (d == 0) {
+        return _K_module_type;
+      } else if (d < 0) {
+        if (!memcmp (key, "ao_priority", 11))
+          return _K_ao_priority;
+      } else {
+        if (!memcmp (key, "visual_type", 11))
+          return _K_visual_type;
+        if (!memcmp (key, "vo_priority", 11))
+          return _K_vo_priority;
+      }
+      break;
+    case 14:
+      if (!memcmp (key, "input_priority", 14))
+        return _K_input_priority;
+      break;
+    case 15:
+      d = memcmp (key, "module_sub_type", 15);
+      if (d == 0) {
+        return _K_module_sub_type;
+      } else if (d < 0) {
+        if (!memcmp (key, "module_priority", 15))
+          return _K_module_priority;
+      } else {
+        if (!memcmp (key, "supported_types", 15))
+          return _K_supported_types;
+      }
+      break;
+    case 16:
+      if (!memcmp (key, "decoder_priority", 16))
+        return _K_decoder_priority;
+      if (!memcmp (key, "demuxer_priority", 16))
+        return _K_demuxer_priority;
+      break;
+    case 21:
+      if (!memcmp (key, "cache_catalog_version", 21))
+        return _K_cache_catalog_version;
+      break;
+    default: ;
+  }
+  return _K_NONE;
+}
+
+static void load_plugin_list (xine_t *this, const char *filename, xine_sarray_t *plugins) {
+#ifdef FAST_SCAN_PLUGINS
+  struct {
+    cfg_entry_t *entries[MAX_DUPL_CFG_ENTRIES];
+    uint32_t have;
+  } cfg;
+#endif
+  fat_node_t *first_in_file, node; /** << node.file.filename is not a xine_fast_string_t, never passed there. */
   size_t stlen, fnlen, idlen;
   /* We dont have that many types yet ;-) */
   uint32_t supported_types[256];
-  char *cfgentries[256], dummy_file[3] = "[]";
+  char *cfgentries[256], dummy_line[1] = "";
   int numcfgs;
 
   xine_fast_text_t *xft;
@@ -1375,318 +1548,259 @@ static void load_plugin_list (xine_t *this, const char *filename, xine_sarray_t 
     return;
 
   _fat_node_init (&node);
+  fnlen = 0;
   stlen = 0;
   idlen = 0;
   fnlen = 0;
   numcfgs = 0;
+  first_in_file = NULL;
+#ifdef FAST_SCAN_PLUGINS
+  cfg.have = 0;
+#endif
 
   while (again) {
+    _k_t index;
     size_t lsize;
-    char *value, *line = xine_fast_text_line (xft, &lsize);
+    char *line = xine_fast_text_line (xft, &lsize);
 
     if (line) {
       /* skip comments */
       if (line[0] == '#')
         continue;
-      /* skip (almost) empty lines */
-      if (lsize < 3)
-        continue;
     } else {
       /* make sure to flush the last one */
       again = 0;
-      line = dummy_file;
-      lsize = 2;
+      line = dummy_line;
+      lsize = 0;
     }
 
-    /* file name */
-    if (line[0] == '[' && version_ok) {
-
-      if (node.file.filename) {
-        fat_node_t *n;
-        char *q;
-        /* get mem for new node */
-        n = malloc (sizeof (node) + stlen + idlen + fnlen + 32);
-        if (!n)
-          break;
-        /* fill in */
-        *n = node;
-        n->node.info = &n->info[0];
-        q = (char *)n + sizeof (*n);
-        if (stlen) {
-          memcpy (&n->supported_types[0], &supported_types[0], stlen);
-          q += stlen;
-          n->ainfo.decoder_info.supported_types = &n->supported_types[0];
-        }
-        if (node.info[0].id) {
-          xine_small_memcpy (q, node.info[0].id, idlen);
-          n->info[0].id = q;
-          q += idlen;
-        }
-        n->file.filename = xine_fast_string_init (q, fnlen + 32);
-        xine_fast_string_set (n->file.filename, node.file.filename, fnlen);
-        /* q += fn_need; */
-        n->node.file = &n->file;
-        n->info[0].special_info = &n->ainfo;
-        /* register */
-        {
-          int index = xine_sarray_add (plugins, n);
-          if (index >= 0) { /* new file */
-            n->lastplugin = n;
-          } else {
-            fat_node_t *first_in_file = xine_sarray_get (plugins, ~index);
-            first_in_file->lastplugin->nextplugin = n;
-            first_in_file->lastplugin = n;
-          }
-        }
-        if (numcfgs) {
-          char **cfgentry;
-#ifdef FAST_SCAN_PLUGINS
-          new_entry_data_t ned;
-          ned.v = this->config;
-          ned.node = &n->node;
-          this->config->set_new_entry_callback (this->config, _new_entry_cb, &ned);
-#endif
-          cfgentries[numcfgs] = NULL;
-          for (cfgentry = cfgentries; *cfgentry; cfgentry++) {
-            char *cfg_key = this->config->register_serialized_entry (this->config, *cfgentry);
-            if (cfg_key) {
-              /* this node is a cached node */
-#ifdef FAST_SCAN_PLUGINS
-              free (cfg_key);
-#else
-              _attach_entry_to_node (&n->node, cfg_key);
-#endif
-            } else {
-              lprintf("failed to deserialize config entry key\n");
-            }
-          }
-#ifdef FAST_SCAN_PLUGINS
-          this->config->unset_new_entry_callback (this->config);
-#endif
-        }
-        /* reset */
-        _fat_node_init (&node);
-        stlen = 0;
-        numcfgs = 0;
-      }
-
-      *line++ = ']'; /* skip '[' */
-      for (value = line + lsize - 2; *value != ']'; value--) ;
-      if (value < line)
-        value = line + lsize - 1;
-      *value = 0;
-      fnlen = value - line;
-
-      if ((fnlen == 16) && !memcmp (line, "libxine/builtins", 16)) {
-        skip = 1;
+    if ((line[0] == '[') && version_ok) {
+      /* file name */
+      if (line[--lsize] != ']')
         continue;
-      }
-      skip = 0;
+      line[lsize] = 0;
+      line++;
+      lsize--;
+      index = _K_filename;
+    } else {
+      /* key=value */
+      size_t l;
+      line[lsize] = '=';
+      l = xine_find_byte (line, '=');
+      line[lsize] = 0;
+      index = _key_2_index (line, l);
+      line += l;
+      lsize -= l;
+      if (*line)
+        *line++ = 0, lsize--;
+    }
 
-      node.file.filename = line;
+    if (skip && (index != _K_filename))
+      continue;
+
+    if (!version_ok) {
+      if (index == _K_cache_catalog_version) {
+        const char *val = line;
+        uint32_t vers = xine_str2uint32 (&val);
+        /* we are slightly backward compatible */
+        if ((vers == CACHE_CATALOG_VERSION) || (vers == CACHE_CATALOG_VERSION - 1)) {
+          version_ok = 1;
+        } else {
+          xine_fast_text_unload (&xft);
+          return;
+        }
+      }
       continue;
     }
 
-    if (skip)
-      continue;
-
-    if ((value = strchr (line, '='))) {
-      typedef enum {
-        _K_NONE = 0,
-        _K_cache_catalog_version,
-        _K_size,
-        _K_mtime,
-        _K_type,
-        _K_api,
-        _K_id,
-        _K_version,
-        _K_visual_type,
-        _K_supported_types,
-        _K_vo_priority,
-        _K_ao_priority,
-        _K_decoder_priority,
-        _K_demuxer_priority,
-        _K_input_priority,
-        _K_post_type,
-        _K_config_key,
-        _K_module_priority,
-        _K_module_sub_type,
-        _K_module_type,
-        _K_LAST
-      } _k_t;
-      _k_t index = _K_NONE;
-      unsigned int klen = value - line;
-      const char *val;
-      *value++ = 0;
-      val = value;
-      /* get known key */
-      switch (klen) {
-        int d;
-        case 2:
-          if (!memcmp (line, "id", 2))
-            index = _K_id;
-          break;
-        case 3:
-          if (!memcmp (line, "api", 3))
-            index = _K_api;
-          break;
-        case 4:
-          if (!memcmp (line, "size", 4))
-            index = _K_size;
-          else if (!memcmp (line, "type", 4))
-            index = _K_type;
-          break;
-        case 5:
-          if (!memcmp (line, "mtime", 5))
-            index = _K_mtime;
-          break;
-        case 7:
-          if (!memcmp (line, "version", 7))
-            index = _K_version;
-          break;
-        case 9:
-          if (!memcmp (line, "post_type", 9))
-            index = _K_post_type;
-          break;
-        case 10:
-          if (!memcmp (line, "config_key", 10))
-            index = _K_config_key;
-          break;
-        case 11:
-          d = memcmp (line, "module_type", 11);
-          if (d == 0) {
-            index = _K_module_type;
-          } else if (d < 0) {
-            if (!memcmp (line, "ao_priority", 11))
-              index = _K_ao_priority;
-          } else {
-            if (!memcmp (line, "visual_type", 11))
-              index = _K_visual_type;
-            else if (!memcmp (line, "vo_priority", 11))
-              index = _K_vo_priority;
-          }
-          break;
-        case 14:
-          if (!memcmp (line, "input_priority", 14))
-            index = _K_input_priority;
-          break;
-        case 15:
-          d = memcmp (line, "module_sub_type", 15);
-          if (d == 0) {
-            index = _K_module_sub_type;
-          } else if (d < 0) {
-            if (!memcmp (line, "module_priority", 15))
-              index = _K_module_priority;
-          } else {
-            if (!memcmp (line, "supported_types", 15))
-              index = _K_supported_types;
-          }
-          break;
-        case 16:
-          if (!memcmp (line, "decoder_priority", 16))
-            index = _K_decoder_priority;
-          else if (!memcmp (line, "demuxer_priority", 16))
-            index = _K_demuxer_priority;
-          break;
-        case 21:
-          if (!memcmp (line, "cache_catalog_version", 21))
-            index = _K_cache_catalog_version;
-          break;
-        default: ;
-      }
-      if( !version_ok ) {
-        if (index == _K_cache_catalog_version) {
-          if (xine_str2uint32 (&val) == CACHE_CATALOG_VERSION)
-            version_ok = 1;
-          else {
-            xine_fast_text_unload (&xft);
-            return;
-          }
-        }
-      } else if (node.file.filename) {
-        union {
-          uint64_t llu;
-          unsigned int u;
-          int i;
-        } v = {0};
-        unsigned int mask = 1u << index;
-        const uint32_t
-          set_int32 = (1 << _K_type) | (1 << _K_api) | (1 << _K_visual_type) | (1 << _K_vo_priority)
-                    | (1 << _K_ao_priority) | (1 << _K_decoder_priority) | (1 << _K_demuxer_priority)
-                    | (1 << _K_input_priority) | (1 << _K_module_priority),
-          set_uint32 = (1 << _K_version) | (1 << _K_post_type) | (1 << _K_module_sub_type),
-          set_uint64 = (1 << _K_size) | (1 << _K_mtime);
-        if (set_int32 & mask)
-          v.i = xine_str2int32 (&val);
-        else if (set_uint32 & mask)
-          v.u = xine_str2uint32 (&val);
-        else if (set_uint64 & mask)
-          v.llu = xine_str2uint64 (&val);
-        switch (index) {
-          case _K_size:
-            node.file.filesize = v.llu;
-            break;
-          case _K_mtime:
-            node.file.filemtime = v.llu;
-            break;
-          case _K_type:
-            node.info[0].type = v.i;
-            break;
-          case _K_api:
-            node.info[0].API = v.i;
-            break;
-          case _K_id:
-            node.info[0].id = value;
-            idlen = (line + lsize) - value + 1;
-            break;
-          case _K_version:
-            node.info[0].version = v.u;
-            break;
-          case _K_visual_type:
-            node.ainfo.vo_info.visual_type = v.i;
-            break;
-          case _K_supported_types: {
-            int i;
-            for (i = 0; i < 255; i++) {
-              if ((supported_types[i] = xine_str2uint32 (&val)) == 0)
-                break;
+    {
+      const char *val = line;
+      union {
+        uint64_t llu;
+        unsigned int u;
+        int i;
+      } v = {0};
+      unsigned int mask = 1u << index;
+      const uint32_t
+        set_int32 = (1 << _K_type) | (1 << _K_api) | (1 << _K_visual_type) | (1 << _K_vo_priority)
+                  | (1 << _K_ao_priority) | (1 << _K_decoder_priority) | (1 << _K_demuxer_priority)
+                  | (1 << _K_input_priority) | (1 << _K_module_priority),
+        set_uint32 = (1 << _K_version) | (1 << _K_post_type) | (1 << _K_module_sub_type),
+        set_uint64 = (1 << _K_size) | (1 << _K_mtime);
+      if (set_int32 & mask)
+        v.i = xine_str2int32 (&val);
+      else if (set_uint32 & mask)
+        v.u = xine_str2uint32 (&val);
+      else if (set_uint64 & mask)
+        v.llu = xine_str2uint64 (&val);
+      switch (index) {
+        case _K_flush:
+          if (idlen) {
+            /* flush this entry */
+            fat_node_t *n;
+            char *q;
+            /* get mem for new node */
+            n = malloc (sizeof (node) + stlen + idlen + 1 + fnlen + 1 + 32);
+            if (!n)
+              break;
+            /* fill in */
+            *n = node;
+            n->node.info = &n->info[0];
+            q = (char *)n + sizeof (*n);
+            if (stlen) {
+              memcpy (&n->supported_types[0], &supported_types[0], stlen);
+              q += stlen;
+              n->ainfo.decoder_info.supported_types = &n->supported_types[0];
             }
-            supported_types[i++] = 0;
-            stlen = i * sizeof (*supported_types);
-            break;
+            if (node.info[0].id) {
+              xine_small_memcpy (q, node.info[0].id, idlen + 1);
+              n->info[0].id = q;
+              q += idlen + 1;
+            }
+            n->file.filename = xine_fast_string_init (q, fnlen + 32);
+            xine_fast_string_set (n->file.filename, node.file.filename, fnlen);
+            /* q += fn_need; */
+            n->node.file = &n->file;
+            n->info[0].special_info = &n->ainfo;
+            /* register */
+            if (first_in_file) {
+              first_in_file->lastplugin->nextplugin = n;
+              first_in_file->lastplugin = n;
+            } else {
+              int i = xine_sarray_add (plugins, n);
+              if (i >= 0) { /* new file */
+                n->lastplugin = n;
+                first_in_file = n;
+              } else {
+                first_in_file = xine_sarray_get (plugins, ~i);
+                first_in_file->lastplugin->nextplugin = n;
+                first_in_file->lastplugin = n;
+              }
+            }
+            if (numcfgs) {
+              char **cfgentry;
+#ifdef FAST_SCAN_PLUGINS
+              new_entry_data_t ned;
+              ned.v = this->config;
+              ned.node = &n->node;
+              this->config->set_new_entry_callback (this->config, _new_entry_cb, &ned);
+#endif
+              cfgentries[numcfgs] = NULL;
+              for (cfgentry = cfgentries; *cfgentry; cfgentry++) {
+                char *cfg_key;
+#ifdef FAST_SCAN_PLUGINS
+                if (cfgentry[0][0] == '[') {
+                  const char *p = *cfgentry + 1;
+                  uint32_t cfg_index = xine_str2uint32 (&p);
+                  if (cfg_index < cfg.have) {
+                    if (!n->node.config_entry_list)
+                      n->node.config_entry_list = xine_list_new ();
+                    if (n->node.config_entry_list && cfg.entries[cfg_index] &&
+                      !xine_list_find (n->node.config_entry_list, cfg.entries[cfg_index]))
+                      xine_list_push_back (n->node.config_entry_list, cfg.entries[cfg_index]);
+                  }
+                  continue;
+                }
+                ned.cfg_entry = NULL;
+                cfg_key = this->config->register_serialized_entry (this->config, *cfgentry);
+                if (cfg.have < MAX_DUPL_CFG_ENTRIES)
+                  cfg.entries[cfg.have++] = ned.cfg_entry;
+#else
+                cfg_key = this->config->register_serialized_entry (this->config, *cfgentry);
+#endif
+                if (cfg_key) {
+                  /* this node is a cached node */
+#ifdef FAST_SCAN_PLUGINS
+                  free (cfg_key);
+#else
+                  _attach_entry_to_node (&n->node, cfg_key);
+#endif
+                } else {
+                  lprintf ("failed to deserialize config entry key\n");
+                }
+              }
+#ifdef FAST_SCAN_PLUGINS
+              this->config->unset_new_entry_callback (this->config);
+#endif
+            }
+            /* reset */
+            node.info[0].id = NULL;
+            idlen = 0;
+            supported_types[0] = 0;
+            stlen = 0;
+            memset (&node.ainfo, 0, sizeof (node.ainfo));
+            numcfgs = 0;
           }
-          case _K_vo_priority:
-            node.ainfo.vo_info.priority = v.i;
-            break;
-          case _K_ao_priority:
-            node.ainfo.ao_info.priority = v.i;
-            break;
-          case _K_decoder_priority:
-            node.ainfo.decoder_info.priority = v.i;
-            break;
-          case _K_demuxer_priority:
-            node.ainfo.demuxer_info.priority = v.i;
-            break;
-          case _K_input_priority:
-            node.ainfo.input_info.priority = v.i;
-            break;
-          case _K_post_type:
-            node.ainfo.post_info.type = v.u;
-            break;
-          case _K_config_key:
-            if (numcfgs < 255)
-              cfgentries[numcfgs++] = value;
-            break;
-          case _K_module_priority:
-            node.ainfo.module_info.priority = v.i;
-            break;
-          case _K_module_sub_type:
-            node.ainfo.module_info.sub_type = v.u;
-            break;
-          case _K_module_type:
-            strlcpy(node.ainfo.module_info.type, value, sizeof(node.ainfo.module_info.type));
-          default: ;
+          break;
+        case _K_filename:
+          node.file.filename = line;
+          fnlen = lsize;
+          skip = ((lsize == 16) && !memcmp (line, "libxine/builtins", 16)) ? 1 : 0;
+          first_in_file = NULL;
+          break;
+        case _K_size:
+          node.file.filesize = v.llu;
+          break;
+        case _K_mtime:
+          node.file.filemtime = v.llu;
+          break;
+        case _K_type:
+          node.info[0].type = v.i;
+          break;
+        case _K_api:
+          node.info[0].API = v.i;
+          break;
+        case _K_id:
+          node.info[0].id = line;
+          idlen = lsize;
+          break;
+        case _K_version:
+          node.info[0].version = v.u;
+          break;
+        case _K_visual_type:
+          node.ainfo.vo_info.visual_type = v.i;
+          break;
+        case _K_supported_types: {
+          int i;
+          for (i = 0; i < 255; i++) {
+            if ((supported_types[i] = xine_str2uint32 (&val)) == 0)
+              break;
+          }
+          supported_types[i++] = 0;
+          stlen = i * sizeof (*supported_types);
+          break;
         }
+        case _K_vo_priority:
+          node.ainfo.vo_info.priority = v.i;
+          break;
+        case _K_ao_priority:
+          node.ainfo.ao_info.priority = v.i;
+          break;
+        case _K_decoder_priority:
+          node.ainfo.decoder_info.priority = v.i;
+          break;
+        case _K_demuxer_priority:
+          node.ainfo.demuxer_info.priority = v.i;
+          break;
+        case _K_input_priority:
+          node.ainfo.input_info.priority = v.i;
+          break;
+        case _K_post_type:
+          node.ainfo.post_info.type = v.u;
+          break;
+        case _K_config_key:
+          if (numcfgs < 255)
+            cfgentries[numcfgs++] = line;
+          break;
+        case _K_module_priority:
+          node.ainfo.module_info.priority = v.i;
+          break;
+        case _K_module_sub_type:
+          node.ainfo.module_info.sub_type = v.u;
+          break;
+        case _K_module_type:
+          strlcpy (node.ainfo.module_info.type, line, sizeof (node.ainfo.module_info.type));
+        default: ;
       }
     }
   }
@@ -1696,28 +1810,31 @@ static void load_plugin_list (xine_t *this, const char *filename, xine_sarray_t 
 
 /**
  * @brief Returns the complete filename for the plugins' cache file
- * @param this Instance pointer, used for logging and libxdg-basedir.
+ * @param this xine instance pointer, used for logging and libxdg-basedir.
+ * @param buf write filename here.
+ * @param bsize write at most this many bytes.
  * @param createdir If not zero, create the directory structure in which
  *        the file has to reside.
- * @return If createdir was not zero, returns NULL if the directory hasn't
- *         been created; otherwise always returns a new string with the
- *         name of the cachefile.
+ * @return the strlen () of filename, or 0 (eg if a directory could not be created).
  * @internal
  *
  * @see XDG Base Directory specification:
  *      http://standards.freedesktop.org/basedir-spec/latest/index.html
  */
-static char *catalog_filename(xine_t *this, int createdir) {
+static size_t catalog_filename (xine_t *this, char *buf, size_t bsize, int createdir) {
   const char *const xdg_cache_home = xdgCacheHome(&this->basedir_handle);
-  char *cachefile;
+  size_t l1, l2;
 
   if (!xdg_cache_home)
-    return NULL;
+    return 0;
 
-  cachefile = malloc( strlen(xdg_cache_home) + sizeof("/"PACKAGE"/plugins.cache") );
-  if (!cachefile)
-    return NULL;
-  strcpy(cachefile, xdg_cache_home);
+  l1 = xine_find_byte (xdg_cache_home, 0);
+  l2 = sizeof (PACKAGE) - 1;
+  if (bsize < l1 + 1 + l2 + 1 + 14 + 1)
+    return 0;
+
+  memcpy (buf, xdg_cache_home, l1 + 1);
+  memcpy (buf + l1, "/" PACKAGE "/plugins.cache", 1 + l2 + 14 + 1);
 
   /* If we're going to create the directory structure, we concatenate
    * piece by piece the path, so that we can try to create all the
@@ -1726,29 +1843,26 @@ static char *catalog_filename(xine_t *this, int createdir) {
    * whole path at once.
    */
   if ( createdir ) {
-    int result = 0;
+    int result = 0, e;
 
-    result = mkdir( cachefile, 0700 );
-    if ( result != 0 && errno != EEXIST ) {
-      xprintf (this, XINE_VERBOSITY_LOG, _("Unable to create %s directory: %s\n"), cachefile, strerror(errno));
-      free(cachefile);
-      return NULL;
+    buf[l1] = 0;
+    result = mkdir (buf, 0700);
+    if ((result != 0) && ((e = errno) != EEXIST)) {
+      xprintf (this, XINE_VERBOSITY_LOG, _("Unable to create %s directory: %s\n"), buf, strerror (e));
+      return 0;
     }
+    buf[l1] = '/';
 
-    strcat(cachefile, "/"PACKAGE);
-    result = mkdir( cachefile, 0700 );
-    if ( result != 0 && errno != EEXIST ) {
-      xprintf (this, XINE_VERBOSITY_LOG, _("Unable to create %s directory: %s\n"), cachefile, strerror(errno));
-      free(cachefile);
-      return NULL;
+    buf[l1 + 1 + l2] = 0;
+    result = mkdir (buf, 0700);
+    if ((result != 0) && ((e = errno) != EEXIST)) {
+      xprintf (this, XINE_VERBOSITY_LOG, _("Unable to create %s directory: %s\n"), buf, strerror (e));
+      return 0;
     }
+    buf[l1 + 1 + l2] = '/';
+  }
 
-    strcat(cachefile, "/plugins.cache");
-
-  } else
-    strcat(cachefile, "/"PACKAGE"/plugins.cache");
-
-  return cachefile;
+  return l1 + 1 + l2 + 1 + 14;
 }
 
 /*
@@ -1756,23 +1870,35 @@ static char *catalog_filename(xine_t *this, int createdir) {
  */
 static void save_catalog (xine_t *this) {
   FILE       *fp;
-  char *const cachefile = catalog_filename(this, 1);
-  char *cachefile_new;
+  char oldname[1024 - 4], newname[1024];
+  size_t nlen = catalog_filename (this, oldname, sizeof (oldname), 1);
 
-  if ( ! cachefile ) return;
+  if (!nlen)
+    return;
 
-  cachefile_new = _x_asprintf("%s.new", cachefile);
+  memcpy (newname, oldname, nlen);
+  memcpy (newname + nlen, ".new", 5);
 
-  if ((fp = fopen (cachefile_new, "wb")) != NULL) {
+  if ((fp = fopen (newname, "wb")) != NULL) {
+    _load_plugins_dupl_cfg_t cfg;
     int i;
+
+    cfg.list = xine_sarray_new (MAX_DUPL_CFG_ENTRIES, _cfg_entry_cmp);
+    /* this is mainly a test :-) */
+    xine_sarray_set_hash (cfg.list, _cfg_entry_hash, 128);
+    xine_sarray_set_mode (cfg.list, XINE_SARRAY_MODE_UNIQUE);
+    cfg.have = 0;
 
     fwrite ("# this file is automatically created by xine, do not edit.\n\n"
             "cache_catalog_version=" CACHE_CATALOG_VERSION_STR "\n\n", 1, 85, fp);
 
     for (i = 0; i < PLUGIN_TYPE_MAX; i++) {
-      save_plugin_list (this, fp, this->plugin_catalog->plugin_lists[i]);
+      save_plugin_list (this, fp, this->plugin_catalog->plugin_lists[i], &cfg);
     }
-    save_plugin_list (this, fp, this->plugin_catalog->modules_list);
+    save_plugin_list (this, fp, this->plugin_catalog->modules_list, &cfg);
+
+    xine_sarray_delete (cfg.list);
+
     if (fclose(fp))
     {
       const char *err = strerror (errno);
@@ -1780,13 +1906,13 @@ static void save_catalog (xine_t *this) {
 		_("failed to save catalogue cache: %s\n"), err);
       goto do_unlink;
     }
-    else if (rename (cachefile_new, cachefile))
+    else if (rename (newname, oldname))
     {
       const char *err = strerror (errno);
       xine_log (this, XINE_LOG_MSG,
 		_("failed to replace catalogue cache: %s\n"), err);
       do_unlink:
-      if (unlink (cachefile_new) && errno != ENOENT)
+      if (unlink (newname) && errno != ENOENT)
       {
 	err = strerror (errno);
 	xine_log (this, XINE_LOG_MSG,
@@ -1794,19 +1920,16 @@ static void save_catalog (xine_t *this) {
       }
     }
   }
-  free(cachefile);
-  free(cachefile_new);
 }
 
 /*
  * load cached catalog from file
  */
 static void load_cached_catalog (xine_t *this) {
-  char *const cachefile = catalog_filename(this, 0);
-  /* It can't return NULL without creating directories */
+  char filename[1024];
 
-  load_plugin_list (this, cachefile, this->plugin_catalog->cache_list);
-  free(cachefile);
+  if (catalog_filename (this, filename, sizeof (filename), 0) > 0)
+    load_plugin_list (this, filename, this->plugin_catalog->cache_list);
 }
 
 
@@ -1832,7 +1955,7 @@ int _x_scan_plugins (xine_t *this_gen) {
   homedir = xine_get_homedir ();
   if (!homedir)
     return -1;
-  homelen = strlen (homedir);
+  homelen = xine_find_byte (homedir, 0);
   if (homelen > XSP_BUFSIZE - 16)
     homelen = XSP_BUFSIZE - 16;
 
@@ -1840,11 +1963,15 @@ int _x_scan_plugins (xine_t *this_gen) {
   if (!this->x.plugin_catalog)
     return -1;
 
+  this->strings.decoder_pri_help = xine_ref_string_ref (
+    _("The priority provides a ranking in case some media can be handled by more than one decoder.\n"
+      "A priority of 0 enables the decoder's default priority."), -1);
+
   XINE_PROFILE (load_cached_catalog (&this->x));
 
 #ifdef XINE_MAKE_BUILTINS
   lprintf ("collect_plugins in libxine\n");
-  _register_plugins_internal (&this->x, NULL, NULL , xine_builtin_plugin_info);
+  _register_plugins_internal (&this->x, NULL, NULL , xine_builtin_plugin_info, FAT_NODE_FLAG_PROBE_CLASS);
 #endif
 
   if ((pluginpath = getenv("XINE_PLUGIN_PATH")) != NULL && *pluginpath) {
@@ -1870,7 +1997,7 @@ int _x_scan_plugins (xine_t *this_gen) {
       start = stop + 1;
       collect_plugins (&this->x, buf, q, bufend);
     }
-    len = strlen (start);
+    len = xine_find_byte (start, 0);
     if (len > (size_t)(bufend - q))
       len = bufend - q;
     xine_small_memcpy (q, start, len); q += len;
@@ -1888,7 +2015,7 @@ int _x_scan_plugins (xine_t *this_gen) {
     collect_plugins (&this->x, buf, buf + homelen + 15, bufend);
 
     p = XINE_PLUGINROOT;
-    len = strlen (p);
+    len = sizeof (XINE_PLUGINROOT) - 1;
     xine_small_memcpy (buf, p, len);
     buf[len++] = '.';
     for (i = XINE_LT_AGE; i >= 0; i--) {
@@ -1976,6 +2103,7 @@ input_plugin_t *_x_find_input_plugin (xine_stream_t *stream, const char *mrl) {
   xine_t *xine;
   plugin_catalog_t *catalog;
   input_plugin_t *plugin;
+  input_class_t *skip_class;
   uint32_t n;
 
   if (!stream || !mrl)
@@ -1986,8 +2114,12 @@ input_plugin_t *_x_find_input_plugin (xine_stream_t *stream, const char *mrl) {
   catalog = xine->plugin_catalog;
   plugin = NULL;
 
+  /* prevent recursion during input_plugin->open (). */
+  skip_class = s->s.input_plugin ? s->s.input_plugin->input_class : NULL;
+
   pthread_mutex_lock (&catalog->lock);
 
+  /* prevent recursion during input_class->get_instance (). */
   n = !s->query_input_plugins[0] ? 0
     : !s->query_input_plugins[1] ? 1 : 2;
   if (n != 2) {
@@ -2002,7 +2134,7 @@ input_plugin_t *_x_find_input_plugin (xine_stream_t *stream, const char *mrl) {
       }
       if (class) {
         s->query_input_plugins[n] = class;
-        if (s->query_input_plugins[0] != s->query_input_plugins[1]) {
+        if ((class != skip_class) && (s->query_input_plugins[0] != s->query_input_plugins[1])) {
           plugin = class->get_instance (class, stream, mrl);
           if (plugin) {
             inc_node_ref (node);
@@ -3281,7 +3413,7 @@ static char *_get_demux_strings (xine_t *self, int kind) {
           const char *s = kind ? cls->extensions : cls->mimetypes;
           if (s) {
             slitem->s = s;
-            size += (slitem->len = strlen (s));
+            size += (slitem->len = xine_find_byte (s, 0));
             slitem++;
           }
         }
@@ -3489,5 +3621,11 @@ void _x_dispose_plugins (xine_t *this) {
     pthread_mutex_destroy(&this->plugin_catalog->lock);
 
     _x_freep (&this->plugin_catalog);
+
+    {
+      xine_private_t *_xine = (xine_private_t *)this;
+
+      xine_ref_string_unref (&_xine->strings.decoder_pri_help);
+    }
   }
 }

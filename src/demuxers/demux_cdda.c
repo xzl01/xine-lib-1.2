@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2001-2018 the xine project
+ * Copyright (C) 2001-2023 the xine project
  *
  * This file is part of xine, a free video player.
  *
@@ -84,8 +84,10 @@ static int demux_cdda_send_chunk (demux_plugin_t *this_gen) {
   }
 
   buf->type = BUF_AUDIO_LPCM_LE;
-  if (len > 0)
+  if (len > 0) {
+    buf->extra_info->total_time = (int64_t)len * 1000 / CD_BYTES_PER_SECOND;
     buf->extra_info->input_normpos = (int)((double)pos * 65535 / len);
+  }
   buf->pts = pos;
   buf->pts *= 90000;
   buf->pts /= CD_BYTES_PER_SECOND;

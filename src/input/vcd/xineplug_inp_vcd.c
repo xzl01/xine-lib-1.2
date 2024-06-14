@@ -679,7 +679,7 @@ vcd_plugin_get_capabilities (input_plugin_t *this_gen)
   return ret;
 }
 
-# if FINISHED
+# if READAHEAD_FINISHED
 /* If needed, will fill out later... */
 static void
 vcd_read_ahead_cb(void *this_gen, xine_cfg_entry_t *entry)
@@ -1975,9 +1975,7 @@ _("range that the stream playback position slider represents playing a VCD."),
       config->register_bool(config, "vcd.use_readahead",
                             (int) false,
                             _("VCD read-ahead caching?"),
-                            _("Class "
-                              "may lead to jerky playback on low-end "
-                              "machines."),
+                            _("May lead to jerky playback on low-end machines."),
                             vcd_read_ahead_cb, class);
 #endif
 

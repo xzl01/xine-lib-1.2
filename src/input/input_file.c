@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2000-2021 the xine project
+ * Copyright (C) 2000-2022 the xine project
  *
  * This file is part of xine, a free video player.
  *
@@ -449,7 +449,7 @@ static int file_input_open (input_plugin_t *this_gen ) {
 #ifdef HAVE_MMAP
   this->mmap_base = NULL;
   do {
-    uint8_t mmap_base;
+    uint8_t *mmap_base;
     size_t tmp_size;
     /* may cause truncation - if it does, DON'T mmap! */
     tmp_size = (size_t)sbuf.st_size;

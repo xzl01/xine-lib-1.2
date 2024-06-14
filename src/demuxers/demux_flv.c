@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2022 the xine project
+ * Copyright (C) 2004-2023 the xine project
  *
  * This file is part of xine, a free video player.
  *
@@ -742,7 +742,6 @@ static int read_flv_packet(demux_flv_t *this, int preview) {
             /* better: +/- 16 frames, but we cannot trust header framerate */
             if ((ptsoffs < -1000) || (ptsoffs > 1000))
               ptsoffs = 0;
-            ptsoffs *= 90;
           break;
           case VF_VP6:
             buf_type = BUF_VIDEO_VP6F;
@@ -848,6 +847,8 @@ static int read_flv_packet(demux_flv_t *this, int preview) {
     /* send frame contents */
     buf_pts = (int64_t)pts * 90;
     check_newpts (this, buf_pts, (tag_type == FLV_TAG_TYPE_VIDEO));
+    pts += ptsoffs;
+    buf_pts += ptsoffs * 90;
     size = this->input->get_length (this->input);
     if (size > 0) {
       this->size = size;
@@ -862,8 +863,9 @@ static int read_flv_packet(demux_flv_t *this, int preview) {
     while (remaining_bytes) {
       buf       = fifo->buffer_pool_size_alloc (fifo, remaining_bytes);
       buf->type = buf_type;
-      buf->pts  = buf_pts + ptsoffs;
+      buf->pts  = buf_pts;
       buf->extra_info->input_time = pts;
+      buf->extra_info->total_time = this->length;
       if (size > 0)
         buf->extra_info->input_normpos = normpos;
       buf->size = remaining_bytes > buf->max_size ? buf->max_size : remaining_bytes;

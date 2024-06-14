@@ -6,16 +6,16 @@ msgid ""
 msgstr ""
 "Project-Id-Version: xine-lib 1.0.1\n"
 "Report-Msgid-Bugs-To: xine-devel@lists.sourceforge.net\n"
-"POT-Creation-Date: 2022-03-09 15:19+0200\n"
+"POT-Creation-Date: 2023-07-06 13:04+0200\n"
 "PO-Revision-Date: 2008-11-10 16:33+0200\n"
 "Last-Translator: František Dvořák <valtri@civ.zcu.cz>\n"
 "Language-Team: Czech <cs@li.org>\n"
-"Language: cs\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
-"Plural-Forms: nplurals=3; plural=n%10==1 && n%100!=11 ? 0 : n%10>=2 && n"
-"%10<=4 && (n%100<10 || n%100>=20) ? 1 : 2;\n"
+"Language: cs\n"
+"Plural-Forms: nplurals=3; plural=n%10==1 && n%100!=11 ? 0 : n%10>=2 && n%"
+"10<=4 && (n%100<10 || n%100>=20) ? 1 : 2;\n"
 
 #: lib/hstrerror.c
 msgid "No error"
@@ -708,7 +708,7 @@ msgstr "jméno zvukového zařízení OSS"
 msgid ""
 "Specifies the base part of the audio device name, to which the OSS device "
 "number is appended to get the full device name.\n"
-"Select \"auto\" if you want xine to auto detect the corret setting."
+"Select \"auto\" if you want xine to auto detect the correct setting."
 msgstr ""
 "Specifikuje základní část jména zvukového zařízení, ke kterému se přidá "
 "číslo OSS zařízení, aby se získalo celé jméno zařízení.\n"
@@ -1149,8 +1149,8 @@ msgid ""
 "heavy post processing can actually make the image worse by blurring it too "
 "much."
 msgstr ""
-"Můžete přizpůsobit množství dodatečného zpracování použitého na video "
-"MPEG-4.\n"
+"Můžete přizpůsobit množství dodatečného zpracování použitého na video MPEG-"
+"4.\n"
 "Vyšší hodnoty mají za následek lepší kvalitu, ale více zatíží CPU. Menší "
 "hodnoty mohou mít za následek defekty v obrázku, např. blokové artefakty. "
 "Pro vysokou kvalitu videa může příliš silné dodatečné zpracování způsobit "
@@ -1228,6 +1228,7 @@ msgid "If the machine freezes on mpeg2 decoding use mpeg2 software decoding."
 msgstr ""
 
 #: src/combined/ffmpeg/ff_video_decoder.c
+#: src/video_out/vaapi/xine_hw_frame_vaapi.c
 msgid "Enable VAAPI"
 msgstr ""
 
@@ -2010,7 +2011,7 @@ msgstr "upravit poměr stran přidáním černých pruhů"
 #: src/dxr3/video_out_dxr3.c
 msgid ""
 "Adds black bars when the image has an aspect ratio the card cannot handle "
-"natively. This is needed to maintain proper image proportions."
+"natively."
 msgstr ""
 "Přidá černé pruhy, jestliže má obraz poměr stran, se kterým karta nemůže "
 "pracovat přímo. Je to nutné k udržení patřičných proporcí obrázku."
@@ -3541,7 +3542,7 @@ msgid "VCD read-ahead caching?"
 msgstr "read-ahead cachování VCD?"
 
 #: src/input/vcd/xineplug_inp_vcd.c
-msgid "Class may lead to jerky playback on low-end machines."
+msgid "May lead to jerky playback on low-end machines."
 msgstr "Na slabších strojích může toto vést k trhanému přehrávání"
 
 #: src/input/vcd/xineplug_inp_vcd.c
@@ -3624,8 +3625,8 @@ msgid ""
 "See the help for the title_format for the meanings of these."
 msgstr ""
 "Formát VCD použitý v titulku GUI. Podobá se unixovému příkazu date. "
-"Specifikátory formátu začínají znakem procento. Specifikátory jsou %A, %C, "
-"%c, %F, %I, %L, %N, %P, %p, %S, %T, %V, %v a %%.\n"
+"Specifikátory formátu začínají znakem procento. Specifikátory jsou %A, %C, %"
+"c, %F, %I, %L, %N, %P, %p, %S, %T, %V, %v a %%.\n"
 "Jejich význam viz nápověda k title_format."
 
 # odvšivovací
@@ -4425,6 +4426,21 @@ msgstr ""
 msgid "DVB subtitle decoder plugin"
 msgstr ""
 
+#: src/spu_dec/spudvb_decoder.c src/spu_dec/sputext_demuxer.c
+msgid "default duration of subtitle display in seconds"
+msgstr "výchozí doba zobrazení titulků v sekundách"
+
+#: src/spu_dec/spudvb_decoder.c src/spu_dec/sputext_demuxer.c
+msgid ""
+"Some subtitle formats do not explicitly give a duration for each subtitle. "
+"For these, you can set a default duration here. Setting to zero will result "
+"in the subtitle being shown until the next one takes over."
+msgstr ""
+"Některé formáty titulků neobsahují explicitně trvání každého titulku.Pro "
+"takové formáty zde můžete nastavit výchozí dobu trvání. Nastavení na nulu "
+"bude mít za následek, že titulek bude vždy zobrazen tak dlouho, než se "
+"objeví další."
+
 #: src/spu_dec/sputext_decoder.c
 msgid "external subtitle decoder plugin"
 msgstr ""
@@ -4509,21 +4525,6 @@ msgstr ""
 #: src/spu_dec/sputext_demuxer.c
 msgid "sputext demuxer plugin"
 msgstr ""
-
-#: src/spu_dec/sputext_demuxer.c
-msgid "default duration of subtitle display in seconds"
-msgstr "výchozí doba zobrazení titulků v sekundách"
-
-#: src/spu_dec/sputext_demuxer.c
-msgid ""
-"Some subtitle formats do not explicitly give a duration for each subtitle. "
-"For these, you can set a default duration here. Setting to zero will result "
-"in the subtitle being shown until the next one takes over."
-msgstr ""
-"Některé formáty titulků neobsahují explicitně trvání každého titulku.Pro "
-"takové formáty zde můžete nastavit výchozí dobu trvání. Nastavení na nulu "
-"bude mít za následek, že titulek bude vždy zobrazen tak dlouho, než se "
-"objeví další."
 
 #: src/spu_dec/xine_cc_decoder.c
 msgid "display closed captions in MPEG-2 streams"
@@ -4758,27 +4759,41 @@ msgstr "Počet vláken na dekódování videa FFmpegem"
 msgid "HEVC video decoder plugin"
 msgstr ""
 
+#: src/video_dec/libvdpau/alterh264_decode.c
+msgid "vdpau: reopen decoder on seek"
+msgstr ""
+
+#: src/video_dec/libvdpau/alterh264_decode.c
+msgid "Some drivers crash without this."
+msgstr ""
+
+#: src/video_dec/libvdpau/alterh264_decode.c
+msgid ""
+"Alternative H264 decoder plugin using VDPAU hardware decoding.\n"
+"Must be used along with video_out_vdpau."
+msgstr ""
+
 #: src/video_dec/libvdpau/vdpau_h264.c
 msgid ""
-"vdpau_h264: h264 decoder plugin using VDPAU hardware decoding.\n"
+"H264 decoder plugin using VDPAU hardware decoding.\n"
 "Must be used along with video_out_vdpau."
 msgstr ""
 
 #: src/video_dec/libvdpau/vdpau_mpeg12.c
 msgid ""
-"vdpau_mpeg12: mpeg1/2 decoder plugin using VDPAU hardware decoding.\n"
+"MPEG1/2 decoder plugin using VDPAU hardware decoding.\n"
 "Must be used along with video_out_vdpau."
 msgstr ""
 
 #: src/video_dec/libvdpau/vdpau_mpeg4.c
 msgid ""
-"vdpau_mpeg4: mpeg4 part 2 decoder plugin using VDPAU hardware decoding.\n"
+"MPEG4 part 2 decoder plugin using VDPAU hardware decoding.\n"
 "Must be used along with video_out_vdpau."
 msgstr ""
 
 #: src/video_dec/libvdpau/vdpau_vc1.c
 msgid ""
-"vdpau_vc1: vc1 decoder plugin using VDPAU hardware decoding.\n"
+"VC-1/WMV3 decoder plugin using VDPAU hardware decoding.\n"
 "Must be used along with video_out_vdpau."
 msgstr ""
 
@@ -4849,6 +4864,21 @@ msgstr ""
 
 #: src/video_out/opengl/xine_glx.c
 msgid "GL provider (GLX)"
+msgstr ""
+
+#: src/video_out/vaapi/xine_hw_frame_vaapi.c
+msgid ""
+"Enable VAAPI video decoding with any video output driver. When disabled, "
+"only vaapi video output driver uses VAAPI accelerated decoding. Currently "
+"only opengl2 video output driver supports this."
+msgstr ""
+
+#: src/video_out/vaapi/xine_hw_frame_vaapi.c src/video_out/video_out_vaapi.c
+msgid "vaapi: set vaapi_guarded_render to 0 ( no ) 1 ( yes )"
+msgstr ""
+
+#: src/video_out/vaapi/xine_hw_frame_vaapi.c
+msgid "VAAPI frame provider"
 msgstr ""
 
 #: src/video_out/video_out_aa.c
@@ -5034,8 +5064,8 @@ msgid ""
 "video_out_fb: only packed truecolour/directcolour is supported (%d).\n"
 "     Check 'fbset -i' or try 'fbset -depth 16'.\n"
 msgstr ""
-"video_out_fb: jsou podporovány pouze pravé barvy (truecolor/directcolor) "
-"(%d).\n"
+"video_out_fb: jsou podporovány pouze pravé barvy (truecolor/directcolor) (%"
+"d).\n"
 "     Zkontrolujte 'fbset -i' nebo zkuste 'fbset -depth 16'.\n"
 
 #: src/video_out/video_out_fb.c src/video_out/video_out_vidix.c
@@ -5117,6 +5147,22 @@ msgstr ""
 msgid ""
 "Set to true if you want bicubic scaling.\n"
 "\n"
+msgstr ""
+
+#: src/video_out/video_out_opengl2.c
+msgid "opengl2: video scale mode"
+msgstr ""
+
+#: src/video_out/video_out_opengl2.c
+msgid ""
+"0: Simple. Very fast, very sharp,\n"
+"   but also stairsteps, uneven lines, and flickering movement.\n"
+"\n"
+"1: Linear blending. Fast, very smooth, but also a bit blurry.\n"
+"\n"
+"2: Catmullrom blending. Very smooth, sharp, but needs fast hardware.\n"
+"\n"
+"3: Cosinus blending. Smooth, very sharp, but needs fast hardware.\n"
 msgstr ""
 
 #: src/video_out/video_out_opengl2.c
@@ -5247,8 +5293,8 @@ msgstr "video_out_pgx64: Chyba: nelze otevřít zařízení framebufferu '%s'\n"
 msgid ""
 "video_out_pgx64: Error: ioctl failed (VIS_GETIDENTIFIER), bad device (%s)\n"
 msgstr ""
-"video_out_pgx64: Chyba: ioctl selhalo (VIS_GETIDENTIFIER), špatné zařízení "
-"(%s)\n"
+"video_out_pgx64: Chyba: ioctl selhalo (VIS_GETIDENTIFIER), špatné zařízení (%"
+"s)\n"
 
 #: src/video_out/video_out_pgx64.c
 #, c-format
@@ -5408,10 +5454,6 @@ msgid "vaapi: set deinterlace to 0 ( none ), 1 ( top field ), 2 ( bob )."
 msgstr ""
 
 #: src/video_out/video_out_vaapi.c
-msgid "vaapi: set vaapi_guarded_render to 0 ( no ) 1 ( yes )"
-msgstr ""
-
-#: src/video_out/video_out_vaapi.c
 msgid ""
 "vaapi: set scaling level to : default (default) fast (fast) hq (HQ) nla "
 "(anamorphic)"
@@ -5445,6 +5487,18 @@ msgid ""
 "simple+3:    Like above, but adjust saturation as well.\n"
 "\n"
 "Hint: play \"test://rgb_levels.bmp\" while trying this.\n"
+msgstr ""
+
+#: src/video_out/video_out_vaapi.c
+msgid "VAAPI overlay mode"
+msgstr ""
+
+#: src/video_out/video_out_vaapi.c
+msgid ""
+"How to display onscreen messages and subtitles:\n"
+"0: Disable overlays for broken driver (eg Mesa radeonsi),\n"
+"1: Auto.\n"
+"2: Force BGRA.\n"
 msgstr ""
 
 #: src/video_out/video_out_vaapi.c
@@ -5553,13 +5607,25 @@ msgid ""
 msgstr ""
 
 #: src/video_out/video_out_vdpau.c
-msgid "vdpau: make snapshots like visible on screen"
+msgid "vdpau: take snapshots as shown on the screen"
 msgstr ""
 
 #: src/video_out/video_out_vdpau.c
 msgid ""
 "If set, snapshots will be scaled, cropped, padded and subtitled.\n"
 "Otherwise, you get the pure original video image.\n"
+msgstr ""
+
+#: src/video_out/video_out_vdpau.c
+msgid "vdpau: work around broken video mixer overlays"
+msgstr ""
+
+#: src/video_out/video_out_vdpau.c
+msgid ""
+"Some 2022 vdpau_radeonsi system driver crashes when showing\n"
+"subtitles or onscreen messages the regular way.\n"
+"The \"On\" setting is slightly slower but helps there.\n"
+"The \"Off\" setting avoids flicker on some other drivers.\n"
 msgstr ""
 
 #: src/video_out/video_out_vdpau.c
@@ -6498,16 +6564,6 @@ msgid "priority for %s decoder"
 msgstr "priorita dekodéru %s"
 
 #: src/xine-engine/load_plugins.c
-msgid ""
-"The priority provides a ranking in case some media can be handled by more "
-"than one decoder.\n"
-"A priority of 0 enables the decoder's default priority."
-msgstr ""
-"Priorita poskytuje pořadí v případě, že by mohla být některá média "
-"zpracovávána více než jedním dekodérem.\n"
-"Priorita 0 povoluje výchozí prioritu dekodéru."
-
-#: src/xine-engine/load_plugins.c
 #, c-format
 msgid ""
 "load_plugins: demuxer plugin %s does not provide a priority, xine-lib will "
@@ -6591,6 +6647,16 @@ msgstr ""
 #, c-format
 msgid "failed to remove new catalogue cache: %s\n"
 msgstr ""
+
+#: src/xine-engine/load_plugins.c
+msgid ""
+"The priority provides a ranking in case some media can be handled by more "
+"than one decoder.\n"
+"A priority of 0 enables the decoder's default priority."
+msgstr ""
+"Priorita poskytuje pořadí v případě, že by mohla být některá média "
+"zpracovávána více než jedním dekodérem.\n"
+"Priorita 0 povoluje výchozí prioritu dekodéru."
 
 #: src/xine-engine/load_plugins.c
 #, c-format
@@ -6815,18 +6881,10 @@ msgstr ""
 
 #: src/xine-engine/video_out.c
 msgid ""
-"video out causes a decoder flush when video out runs out of frames for "
-"displaying,\n"
-"because the decoder hasn't deliverd new frames for quite a while.\n"
-"flushing the decoder causes decoding errors for images decoded after the "
-"flush.\n"
-"to avoid the decoding errors, decoder flush at video out should be "
-"disabled.\n"
-"\n"
-"WARNING: as the flush was introduced to fix some issues when playing DVD "
-"still images, it is\n"
-"likely that these issues may reappear in case they haven't been fixed "
-"differently meanwhile.\n"
+"Video decoder is flushed when it hasn't delivered new frames for quite a "
+"while.\n"
+"Turning this off fixes some temporary image distortion.\n"
+"But it may also add some issues with DVD still images.\n"
 msgstr ""
 
 #: src/xine-engine/video_out.c
@@ -6837,6 +6895,17 @@ msgstr ""
 #: src/xine-engine/video_out.c
 #, c-format
 msgid "video_out: early wakeups: %d of %d\n"
+msgstr ""
+
+#: src/xine-engine/video_out.c
+msgid "Limit output frame rate"
+msgstr ""
+
+#: src/xine-engine/video_out.c
+msgid ""
+"If not 0, limit output frame rate to this value, without extra jitter.\n"
+"Try 40 to save power, and/or to deal with a slow driver.\n"
+"Otherwise, current screen refresh rate plus 5 may be a good idea ;-)\n"
 msgstr ""
 
 #: src/xine-engine/video_out.c
@@ -6941,17 +7010,9 @@ msgstr ""
 
 #: src/xine-engine/xine.c
 msgid ""
-"when watching live tv a discontinuity happens for example about every 26.5 "
-"hours due to a pts wrap.\n"
-"flushing the decoder at that time causes decoding errors for images after "
-"the pts wrap.\n"
-"to avoid the decoding errors, decoder flush at discontinuity should be "
-"disabled.\n"
-"\n"
-"WARNING: as the flush was introduced to fix some issues when playing DVD "
-"still images, it is\n"
-"likely that these issues may reappear in case they haven't been fixed "
-"differently meanwhile.\n"
+"Video decoder is flushed at timeline jumps.\n"
+"Turning this off fixes occasional image distortion with DVB (TV).\n"
+"But it may also add some issues with DVD still images.\n"
 msgstr ""
 
 #: src/xine-engine/xine.c
@@ -7204,6 +7265,19 @@ msgid ""
 msgstr ""
 
 #: src/xine-engine/xine.c
+msgid "Use pre-1.2.13 libxine audio level settings"
+msgstr ""
+
+#: src/xine-engine/xine.c
+#, no-c-format
+msgid ""
+"On:  0..200 means 0..200% of audio amplification and equalizer amplitudes.\n"
+"     Some applications rely on this, and use their own level mapping.\n"
+"Off: 100 still means 100% or 0 dB. A step of 1 then means plus or minus\n"
+"     1 dB for amplification, and 0.5 dB for equalizer.\n"
+msgstr ""
+
+#: src/xine-engine/xine.c
 msgid "messages"
 msgstr "zprávy"
 
@@ -7296,7 +7370,6 @@ msgstr ""
 "dnešních počítačích. Proto xine poskytuje různé vyladěné metody, které "
 "provádějí toto kopírování. Obvykle je nejlepší metoda zjišťována automaticky."
 
-#, c-format
 #~ msgid "configfile: WARNING: backing up configfile to %s failed\n"
 #~ msgstr ""
 #~ "configfile: VAROVÁNÍ: zálohování konfiguračního souboru do %s selhalo\n"

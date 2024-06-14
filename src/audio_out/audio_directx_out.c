@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2001-2018 the xine project
+ * Copyright (C) 2001-2022 the xine project
  *
  * This file is part of xine, a unix video player.
  *
@@ -26,6 +26,10 @@
  *   - stop looping on stop (requires AO_CTRL_PLAY_STOP?)
  *   - posibility of bad state when buffer overrun
  */
+
+#ifdef HAVE_CONFIG_H
+#include "config.h"
+#endif
 
 typedef unsigned char boolean;
 

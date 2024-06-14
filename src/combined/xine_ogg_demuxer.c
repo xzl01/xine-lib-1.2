@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2000-2021 the xine project
+ * Copyright (C) 2000-2023 the xine project
  *
  * This file is part of xine, a free video player.
  *
@@ -583,16 +583,18 @@ static void read_chapter_comment (demux_ogg_t *this, ogg_packet *op) {
 
         if (!this->chapter_info) {
           this->chapter_info = (chapter_info_t *)calloc(1, sizeof(chapter_info_t));
-          this->chapter_info->current_chapter = -1;
         }
-        this->chapter_info->max_chapter = chapter_no;
-        this->chapter_info->entries = realloc( this->chapter_info->entries, chapter_no*sizeof(chapter_entry_t));
-        this->chapter_info->entries[chapter_no-1].name = chapter_name;
-        this->chapter_info->entries[chapter_no-1].start_pts = (msec + (1000.0 * sec) + (60000.0 * min) + (3600000.0 * hour))*90;
-
-        free (chapter_time);
+        if (this->chapter_info) {
+          this->chapter_info->current_chapter = -1;
+          this->chapter_info->max_chapter = chapter_no;
+          this->chapter_info->entries = realloc( this->chapter_info->entries, chapter_no*sizeof(chapter_entry_t));
+          this->chapter_info->entries[chapter_no-1].name = chapter_name;
+          this->chapter_info->entries[chapter_no-1].start_pts = (msec + (1000.0 * sec) + (60000.0 * min) + (3600000.0 * hour))*90;
+        } else {
+          _x_freep (&chapter_name);
+        }
+        _x_freep (&chapter_time);
         chapter_no = 0;
-        chapter_time = chapter_name = 0;
       }
     }
     free(chapter_name);
@@ -794,19 +796,15 @@ static void send_ogg_buf (demux_ogg_t *this,
     }
   } else if ((this->si[stream_num]->buf_types & 0xFFFF0000) == BUF_SPU_CMML) {
     buf_element_t *buf;
-    uint32_t *val;
     char *str;
 
     buf = this->video_fifo->buffer_pool_alloc (this->video_fifo);
 
     buf->type = this->si[stream_num]->buf_types;
-
     buf->pts = get_pts (this, stream_num, op->granulepos);
 
-    val = (uint32_t * )buf->content;
-    str = (char *)val;
-
-    memcpy(str, op->packet, op->bytes);
+    str = buf->content;
+    memcpy (str, op->packet, op->bytes);
     str[op->bytes] = '\0';
 
     buf->size = 12 + op->bytes + 1;
@@ -958,7 +956,7 @@ static void decode_video_header (demux_ogg_t *this, const int stream_num, ogg_pa
   int64_t          loctime_unit;
 
   /* read fourcc with machine endianness */
-  locsubtype = *((uint32_t *)&op->packet[9]);
+  memcpy (&locsubtype, op->packet + 9, sizeof (locsubtype));
 
   /* everything else little endian */
   loctime_unit = _X_LE_64(&op->packet[17]);
@@ -1141,7 +1139,7 @@ static void decode_dshow_header (demux_ogg_t *this, const int stream_num, ogg_pa
     lprintf ("seems to be a video stream.\n");
 
     channel = this->num_video_streams++;
-    fcc = *(uint32_t*)(op->packet+68);
+    memcpy (&fcc, op->packet + 68, sizeof (fcc));
     lprintf ("fourcc %08x\n", fcc);
 
     this->si[stream_num]->buf_types = _x_fourcc_to_buf_video (fcc);
@@ -1169,8 +1167,12 @@ static void decode_dshow_header (demux_ogg_t *this, const int stream_num, ogg_pa
     buf = this->video_fifo->buffer_pool_alloc (this->video_fifo);
     buf->decoder_flags = BUF_FLAG_HEADER|BUF_FLAG_STDHEADER|BUF_FLAG_FRAMERATE|
                          BUF_FLAG_FRAME_END;
-    this->frame_duration = (*(int64_t*)(op->packet+164)) * 9 / 1000;
-    this->si[stream_num]->factor = (*(int64_t*)(op->packet+164)) * 9;
+    {
+      int64_t v;
+      memcpy (&v, op->packet + 164, sizeof (v));
+      this->si[stream_num]->factor = v * 9;
+      this->frame_duration = v * 9 / 1000;
+    }
     this->si[stream_num]->quotient = 1000;
 
     buf->decoder_info[0] = this->frame_duration;
@@ -1230,7 +1232,6 @@ static void decode_dshow_header (demux_ogg_t *this, const int stream_num, ogg_pa
 
 static void decode_text_header (demux_ogg_t *this, const int stream_num, ogg_packet *op) {
   int channel=0;
-  uint32_t *val;
   buf_element_t *buf;
 
   (void)op;
@@ -1243,10 +1244,7 @@ static void decode_text_header (demux_ogg_t *this, const int stream_num, ogg_pac
   buf = this->video_fifo->buffer_pool_alloc (this->video_fifo);
   buf->type = this->si[stream_num]->buf_types;
   buf->pts = 0;
-  val = (uint32_t * )buf->content;
-  *val++=0;
-  *val++=0;
-  *val++=0;
+  memset (buf->content, 0, 12);
   this->video_fifo->put (this->video_fifo, buf);
 }
 
@@ -2285,3 +2283,4 @@ void *ogg_init_class (xine_t *xine, const void *data) {
 
   return this;
 }
+

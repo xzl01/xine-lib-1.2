@@ -399,8 +399,6 @@ libxine.so.2 libxine2 #MINVER#
  xine_post_wire@Base 1.2.0
  xine_post_wire_audio_port@Base 1.2.0
  xine_post_wire_video_port@Base 1.2.0
- xine_private_strlcat@Base 1.2.9
- xine_private_strlcpy@Base 1.2.9
  xine_profiler_allocate_slot@Base 1.2.0
  xine_profiler_init@Base 1.2.0
  xine_profiler_print_results@Base 1.2.0
@@ -469,3 +467,23 @@ libxine.so.2 libxine2 #MINVER#
  yuy2_to_yv12@Base 1.2.0
  yv12_to_yuy2@Base 1.2.0
  yv12_to_yv12@Base 1.2.0
+ _x_demux_read_stream_header@Base 1.2.13
+ _x_spu_dvb_opacity@Base 1.2.13
+ id3v1_parse_tag@Base 1.2.13
+ id3v2_parse_tag@Base 1.2.13
+ xine_parse_id3v2_tag@Base 1.2.13
+ xine_pts_queue_delete@Base 1.2.13
+ xine_pts_queue_get@Base 1.2.13
+ xine_pts_queue_new@Base 1.2.13
+ xine_pts_queue_put@Base 1.2.13
+ xine_pts_queue_reset@Base 1.2.13
+ xine_query_stream_info@Base 1.2.13
+ xine_rats_shorten@Base 1.2.13
+ xine_ref_string_len@Base 1.2.13
+ xine_ref_string_ref@Base 1.2.13
+ xine_ref_string_unref@Base 1.2.13
+ xine_sarray_set_hash@Base 1.2.13
+ xine_ts_add@Base 1.2.13
+ xine_ts_from_string@Base 1.2.13
+ xine_ts_sub@Base 1.2.13
+ xine_ts_to_timebase@Base 1.2.13

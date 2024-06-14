@@ -1,6 +1,6 @@
 /*
  * kate: space-indent on; indent-width 2; mixedindent off; indent-mode cstyle; remove-trailing-space on;
- * Copyright (C) 2008-2020 the xine project
+ * Copyright (C) 2008-2023 the xine project
  * Copyright (C) 2008 Christophe Thommeret <hftom@free.fr>
  *
  * This file is part of xine, a free video player.
@@ -1114,7 +1114,7 @@ void *mpeg12_init_plugin (xine_t *xine, const void *data) {
     .open_plugin     = open_plugin,
     .identifier      = "vdpau_mpeg12",
     .description     =
-        N_("vdpau_mpeg12: mpeg1/2 decoder plugin using VDPAU hardware decoding.\n"
+        N_("MPEG1/2 decoder plugin using VDPAU hardware decoding.\n"
            "Must be used along with video_out_vdpau."),
     .dispose         = NULL,
   };

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2000-2021 the xine project
+ * Copyright (C) 2000-2023 the xine project
  *
  * This file is part of xine, a free video player.
  *
@@ -137,56 +137,62 @@ void _x_extra_info_reset( extra_info_t *extra_info ) {
   memset( extra_info, 0, sizeof(extra_info_t) );
 }
 
-void _x_extra_info_merge( extra_info_t *dst, extra_info_t *src ) {
-
+void _x_extra_info_merge (extra_info_t *dst, const extra_info_t *src) {
   if (!src->invalid) {
-    if( src->input_normpos )
+    if (src->input_normpos)
       dst->input_normpos = src->input_normpos;
-
-    if( src->input_time )
+    if (src->input_time)
       dst->input_time = src->input_time;
-
-    if( src->frame_number )
+    if (src->frame_number)
       dst->frame_number = src->frame_number;
-
-    if( src->seek_count )
+    if (src->seek_count)
       dst->seek_count = src->seek_count;
-
-    if( src->vpts )
+    if (src->vpts)
       dst->vpts = src->vpts;
+    if (src->total_time)
+      dst->total_time = src->total_time;
   }
 }
 
-static void xine_current_extra_info_reset (xine_stream_private_t *stream) {
+static void xine_current_extra_info_reset (xine_stream_private_t *stream, int seek_count) {
   int index = xine_refs_get (&stream->current_extra_info_index);
   extra_info_t *b = &stream->current_extra_info[(index + 1) & (XINE_NUM_CURR_EXTRA_INFOS - 1)];
 
-  memset (b, 0, sizeof (*b));
+  b->invalid = 0;
+  b->input_normpos = 0;
+  b->input_time = 0;
+  b->frame_number = 0;
+  b->total_time = 0;
+  b->vpts = 0;
+  b->seek_count = seek_count;
   xine_refs_add (&stream->current_extra_info_index, 1);
 }
 
+#define _INT_NONZERO(_v) ((unsigned int)((_v) | (-(_v))) >> (8 * sizeof (_v) - 1))
+#define _INT64_NONZERO(_v) (unsigned int)((uint64_t)((_v) | (-(_v))) >> (8 * sizeof (_v) - 1))
 void xine_current_extra_info_set (xine_stream_private_t *stream, const extra_info_t *info) {
   if (!info->invalid) {
     int index = xine_refs_get (&stream->current_extra_info_index);
-    const extra_info_t *a = &stream->current_extra_info[index & (XINE_NUM_CURR_EXTRA_INFOS - 1)];
+    const extra_info_t *a[2] = {&stream->current_extra_info[index & (XINE_NUM_CURR_EXTRA_INFOS - 1)], info};
     extra_info_t *b = &stream->current_extra_info[(index + 1) & (XINE_NUM_CURR_EXTRA_INFOS - 1)];
 
-    b->input_normpos = info->input_normpos ? info->input_normpos : a->input_normpos;
-    b->input_time    = info->input_time    ? info->input_time    : a->input_time;
-    b->frame_number  = info->frame_number  ? info->frame_number  : a->frame_number;
-    b->seek_count    = info->seek_count    ? info->seek_count    : a->seek_count;
-    b->vpts          = info->vpts          ? info->vpts          : a->vpts;
+    b->input_normpos = a[_INT_NONZERO (a[1]->input_normpos)]->input_normpos;
+    b->input_time    = a[_INT_NONZERO (a[1]->input_time)]->input_time;
+    b->frame_number  = a[_INT_NONZERO (a[1]->frame_number)]->frame_number;
+    b->seek_count    = a[_INT_NONZERO (a[1]->seek_count)]->seek_count;
+    b->total_time    = a[_INT_NONZERO (a[1]->total_time)]->total_time;
+
+    b->vpts          = a[_INT64_NONZERO (a[1]->vpts)]->vpts;
 
     xine_refs_add (&stream->current_extra_info_index, 1);
   }
 }
 
-static int xine_current_extra_info_get (xine_stream_private_t *stream, extra_info_t *info) {
+static void xine_current_extra_info_get (xine_stream_private_t *stream, extra_info_t *info) {
   int index = xine_refs_get (&stream->current_extra_info_index);
   const extra_info_t *a = &stream->current_extra_info[index & (XINE_NUM_CURR_EXTRA_INFOS - 1)];
 
   *info = *a;
-  return stream->video_seek_count;
 }
   
 #define XINE_TICKET_FLAG_PAUSE (int)0x40000000
@@ -733,7 +739,8 @@ static void set_speed_internal (xine_stream_private_t *stream, int speed) {
 
 /* SPEED_FLAG_IGNORE_CHANGE must be set in stream->speed_change_flags, when entering this function */
 static void stop_internal (xine_stream_private_t *stream) {
-  lprintf ("status before = %d\n", stream->status);
+  xprintf (stream->s.xine, XINE_VERBOSITY_DEBUG,
+    "stop_internal (%p).\n", (void *)stream);
 
   if (stream->side_streams[0] == stream)
     stream->demux.start_buffers_sent = 0;
@@ -765,7 +772,8 @@ static void stop_internal (xine_stream_private_t *stream) {
       }
     }
   }
-  lprintf ("done\n");
+  xprintf (stream->s.xine, XINE_VERBOSITY_DEBUG,
+    "stop_internal (%p): done.\n", (void *)stream);
 }
 
 /* force engine to run at normal speed. if you are about to grab a ticket,
@@ -848,6 +856,9 @@ static void close_internal (xine_stream_private_t *stream) {
   xine_private_t *xine = (xine_private_t *)m->s.xine;
   int flush = !m->gapless_switch && !m->finished_naturally;
 
+  xprintf (stream->s.xine, XINE_VERBOSITY_DEBUG,
+    "close_internal (%p, %s).\n", (void *)stream, flush ? "flush" : "gapless_switch");
+
   if (m->s.slave) {
     xine_close (m->s.slave);
     if (m->slave_is_subtitle) {
@@ -906,6 +917,9 @@ static void close_internal (xine_stream_private_t *stream) {
     }
   }
 
+  /* reset leading id3v2 tag info */
+  stream->id3v2_tag_size = -1;
+
   /*
    * reset / free meta info
    * XINE_STREAM_INFO_MAX is at least 99 but the info arrays are sparsely used.
@@ -933,6 +947,9 @@ static void close_internal (xine_stream_private_t *stream) {
   stream->spu_track_map_entries = 0;
 
   _x_keyframes_set (&stream->s, NULL, 0);
+
+  xprintf (stream->s.xine, XINE_VERBOSITY_DEBUG,
+    "close_internal (%p): done.\n", (void *)stream);
 }
 
 void xine_close (xine_stream_t *s) {
@@ -1049,7 +1066,7 @@ xine_stream_t *xine_stream_new (xine_t *this, xine_audio_port_t *ao, xine_video_
   xine_stream_private_t *stream;
   pthread_mutexattr_t attr;
 
-  xprintf (this, XINE_VERBOSITY_DEBUG, "xine_stream_new\n");
+  xprintf (this, XINE_VERBOSITY_DEBUG, "xine_stream_new ().\n");
 
   /* create a new stream object */
   stream = calloc (1, sizeof (*stream));
@@ -1088,6 +1105,7 @@ xine_stream_t *xine_stream_new (xine_t *this, xine_audio_port_t *ao, xine_video_
   stream->query_input_plugins[0]   = NULL;
   stream->query_input_plugins[1]   = NULL;
   stream->seekable                 = 0;
+  stream->first_frame.seek_count   = 0;
   {
     int i;
     for (i = 1; i < XINE_NUM_SIDE_STREAMS; i++)
@@ -1103,13 +1121,16 @@ xine_stream_t *xine_stream_new (xine_t *this, xine_audio_port_t *ao, xine_video_
   _x_extra_info_reset (&stream->ei[1]);
   */
 
-  stream->audio_decoder_extra_info = &stream->ei[0];
-  stream->video_decoder_extra_info = &stream->ei[1];
+  stream->audio_decoder_extra_info = &stream->ei[0].ei;
+  stream->video_decoder_extra_info = &stream->ei[1].ei;
+  stream->video_decoder_ei_index   = 0;
 
   stream->side_streams[0]       = stream;
   stream->id_flag               = 1 << 0;
   stream->s.xine                = this;
   stream->status                = XINE_STATUS_IDLE;
+
+  stream->id3v2_tag_size        = -1;
 
   stream->video_source.name   = "video source";
   stream->video_source.type   = XINE_POST_DATA_VIDEO;
@@ -1174,11 +1195,9 @@ xine_stream_t *xine_stream_new (xine_t *this, xine_audio_port_t *ao, xine_video_
   stream->disable_decoder_flush_at_discontinuity = this->config->register_bool (this->config,
     "engine.decoder.disable_flush_at_discontinuity", 0,
     _("disable decoder flush at discontinuity"),
-    _("when watching live tv a discontinuity happens for example about every 26.5 hours due to a pts wrap.\n"
-      "flushing the decoder at that time causes decoding errors for images after the pts wrap.\n"
-      "to avoid the decoding errors, decoder flush at discontinuity should be disabled.\n\n"
-      "WARNING: as the flush was introduced to fix some issues when playing DVD still images, it is\n"
-      "likely that these issues may reappear in case they haven't been fixed differently meanwhile.\n"),
+    _("Video decoder is flushed at timeline jumps.\n"
+      "Turning this off fixes occasional image distortion with DVB (TV).\n"
+      "But it may also add some issues with DVD still images.\n"),
     20, video_decoder_update_disable_flush_at_discontinuity, stream);
 
   /* create a metronom */
@@ -1206,6 +1225,7 @@ xine_stream_t *xine_stream_new (xine_t *this, xine_audio_port_t *ao, xine_video_
   /* register stream */
   xine_list_push_back (this->streams, &stream->s);
   pthread_mutex_unlock (&this->streams_lock);
+  xprintf (this, XINE_VERBOSITY_DEBUG, "xine_stream_new () = %p.\n", (void *)stream);
   return &stream->s;
 
   /* err_audio: */
@@ -1239,6 +1259,7 @@ xine_stream_t *xine_stream_new (xine_t *this, xine_audio_port_t *ao, xine_video_
   free (stream);
 
   err_null:
+  xprintf (this, XINE_VERBOSITY_DEBUG, "xine_stream_new () failed.\n");
   return NULL;
 }
 
@@ -1298,7 +1319,7 @@ xine_stream_t *xine_get_side_stream (xine_stream_t *master, int index) {
   if (s)
     return &s->s;
 
-  xprintf (m->s.xine, XINE_VERBOSITY_DEBUG, "xine_side_stream_new (%p, %d)\n", (void *)m, index);
+  xprintf (m->s.xine, XINE_VERBOSITY_DEBUG, "xine_side_stream_new (%p, %d).\n", (void *)m, index);
 
   /* create a new stream object */
   s = calloc (1, sizeof (*s));
@@ -1358,6 +1379,8 @@ xine_stream_t *xine_get_side_stream (xine_stream_t *master, int index) {
   s->id_flag         = 1 << index;
   s->s.xine = m->s.xine;
   s->status = XINE_STATUS_IDLE;
+
+  s->id3v2_tag_size = -1;
 
   s->video_source.name   = "video source";
   s->video_source.type   = XINE_POST_DATA_VIDEO;
@@ -1429,6 +1452,8 @@ xine_stream_t *xine_get_side_stream (xine_stream_t *master, int index) {
   xine_rwlock_wrlock (&m->info_lock);
   m->side_streams[index] = s;
   xine_rwlock_unlock (&m->info_lock);
+
+  xprintf (m->s.xine, XINE_VERBOSITY_DEBUG, "xine_side_stream_new (%p, %d) = %p.\n", (void *)m, index, (void *)s);
   return &s->s;
 }
 
@@ -1707,6 +1732,9 @@ static int open_internal (xine_stream_private_t *stream, const char *mrl, input_
   _xine_args_t _args;
   uint8_t *buf, *name, *args;
   int no_cache = 0;
+
+  xprintf (stream->s.xine, XINE_VERBOSITY_DEBUG,
+    "open_internal (%p, %s).\n", (void *)stream, mrl ? mrl : "NULL");
 
   if (!mrl) {
     xprintf (stream->s.xine, XINE_VERBOSITY_LOG, _("xine: error while parsing mrl\n"));
@@ -2018,9 +2046,12 @@ static int open_internal (xine_stream_private_t *stream, const char *mrl, input_
   }
 
   no_cache = no_cache || (stream->s.input_plugin->get_capabilities (stream->s.input_plugin) & INPUT_CAP_NO_CACHE);
-  if( !no_cache )
+  if( !no_cache ) {
     /* enable buffered input plugin (request optimizer) */
-    stream->s.input_plugin = _x_cache_plugin_get_instance (&stream->s);
+    input_plugin_t *cache_plugin = _x_cache_plugin_get_instance (&stream->s);
+    if (cache_plugin)
+      stream->s.input_plugin = cache_plugin;
+  }
 
   /* Let the plugin request a specific demuxer (if the user hasn't).
    * This overrides find-by-content & find-by-extension.
@@ -2072,9 +2103,8 @@ static int open_internal (xine_stream_private_t *stream, const char *mrl, input_
                        demux_class->description));
   }
 
-  _x_extra_info_reset( stream->current_extra_info );
-  _x_extra_info_reset( stream->video_decoder_extra_info );
-  _x_extra_info_reset( stream->audio_decoder_extra_info );
+  xprintf (stream->s.xine, XINE_VERBOSITY_DEBUG,
+    "open_internal (%p): demux OK.\n", (void *)stream);
 
   /* assume handled for now. we will only know for sure after trying
    * to init decoders (which should happen when headers are sent)
@@ -2086,7 +2116,19 @@ static int open_internal (xine_stream_private_t *stream, const char *mrl, input_
    * send and decode headers
    */
 
+  /* ARGH: demux_image sends whole image as preview at open_internal () time... */
+  if (stream->side_streams[0] == stream) {
+    pthread_mutex_lock (&stream->first_frame.lock);
+    stream->first_frame.seek_count++;
+    pthread_mutex_unlock (&stream->first_frame.lock);
+    xprintf (stream->s.xine, XINE_VERBOSITY_DEBUG,
+      "open_internal (%p): seek #%d.\n", (void *)stream, stream->first_frame.seek_count);
+  }
+  /* ...right inside this. */
   stream->demux.plugin->send_headers (stream->demux.plugin);
+  /* people may call xine_get_pos_length () right after xine_open () to get stream length. */
+  if (stream->status != XINE_STATUS_PLAY)
+    xine_current_extra_info_reset (stream, stream->side_streams[0]->first_frame.seek_count);
 
   if (stream->demux.plugin->get_status (stream->demux.plugin) != DEMUX_OK) {
     if (stream->demux.plugin->get_status (stream->demux.plugin) == DEMUX_FINISHED) {
@@ -2111,8 +2153,11 @@ static int open_internal (xine_stream_private_t *stream, const char *mrl, input_
 
   _x_demux_control_headers_done (&stream->s);
 
-  stream->status = XINE_STATUS_STOP;
+  if (stream->status != XINE_STATUS_PLAY)
+    stream->status = XINE_STATUS_STOP;
 
+  xprintf (stream->s.xine, XINE_VERBOSITY_DEBUG,
+    "open_internal (%p): OK.\n", (void *)stream);
   lprintf ("done\n");
   return 1;
 }
@@ -2238,7 +2283,7 @@ static void wait_first_frame (xine_stream_private_t *stream) {
 static int play_internal (xine_stream_private_t *stream, int start_pos, int start_time) {
   xine_private_t *xine = (xine_private_t *)stream->s.xine;
   int        flush;
-  int        first_frame_flag = 3;
+  int        first_frame_flag = 3, seek_count;
   int        demux_status;
   uint32_t   input_is_seekable = 1;
   struct     timespec ts1 = {0, 0}, ts2 = {0, 0};
@@ -2247,10 +2292,20 @@ static int play_internal (xine_stream_private_t *stream, int start_pos, int star
     uint32_t flags;
   } sides[XINE_NUM_SIDE_STREAMS + 1], *sp, *sp2;
 
+  /* ARGH: demux_image sends whole image as preview at open_internal () time. */
+  if (stream->status == XINE_STATUS_PLAY) {
+    pthread_mutex_lock (&stream->first_frame.lock);
+    seek_count = ++stream->first_frame.seek_count;
+    pthread_mutex_unlock (&stream->first_frame.lock);
+  } else {
+    seek_count = stream->first_frame.seek_count;
+  }
+
   if (stream->s.xine->verbosity >= XINE_VERBOSITY_DEBUG) {
     xine_gettime (&ts1);
     xprintf (stream->s.xine, XINE_VERBOSITY_DEBUG,
-      "play_internal (%d.%03d, %d)\n", start_time / 1000, start_time % 1000, start_pos);
+      "play_internal (%p, %d.%03d, %d): seek #%d...\n",
+      (void *)stream, start_time / 1000, start_time % 1000, start_pos, seek_count);
   }
 
   /* list the streams (master and sides) with a demux. */
@@ -2284,7 +2339,8 @@ static int play_internal (xine_stream_private_t *stream, int start_pos, int star
   }
   flush = (stream->s.master == &stream->s) && !stream->gapless_switch && !stream->finished_naturally;
   if (!flush)
-    xprintf (stream->s.xine, XINE_VERBOSITY_DEBUG, "play_internal: using gapless switch.\n");
+    xprintf (stream->s.xine, XINE_VERBOSITY_DEBUG,
+      "play_internal (%p): using gapless switch.\n", (void *)stream);
 
   /* hint demuxer thread we want to interrupt it */
   sp = sides;
@@ -2352,7 +2408,8 @@ static int play_internal (xine_stream_private_t *stream, int start_pos, int star
     xine_gettime (&ts2);
     diff = (int)(ts2.tv_nsec - ts1.tv_nsec) / 1000000;
     diff += (ts2.tv_sec - ts1.tv_sec) * 1000;
-    xprintf (stream->s.xine, XINE_VERBOSITY_DEBUG, "play_internal: ...demux suspended after %dms.\n", diff);
+    xprintf (stream->s.xine, XINE_VERBOSITY_DEBUG,
+      "play_internal (%p): ...demux suspended after %dms.\n", (void *)stream, diff);
   }
 
   /* set normal speed again (now that demuxer/input pair is suspended)
@@ -2427,7 +2484,8 @@ static int play_internal (xine_stream_private_t *stream, int start_pos, int star
   pthread_mutex_unlock (&stream->first_frame.lock);
 
   /* before resuming the demuxer, reset current position information */
-  xine_current_extra_info_reset (stream);
+  if (flush)
+    xine_current_extra_info_reset (stream, -2);
 
   /* now resume demuxer thread if it is running already */
   demux_status = 0;
@@ -2464,10 +2522,12 @@ static int play_internal (xine_stream_private_t *stream, int start_pos, int star
   wait_first_frame (stream);
   {
     extra_info_t info;
-    int video_seek_count = xine_current_extra_info_get (stream, &info);
-    if (info.seek_count != video_seek_count)
-    xprintf (stream->s.xine, XINE_VERBOSITY_DEBUG, "play_internal: warning: seek count still %d != %d.\n",
-      info.seek_count, video_seek_count);
+
+    xine_current_extra_info_get (stream, &info);
+    if (info.seek_count != seek_count)
+      xprintf (stream->s.xine, XINE_VERBOSITY_DEBUG,
+        "play_internal (%p): warning: seek count still %d != %d.\n",
+        (void *)stream, info.seek_count, seek_count);
   }
 
   if (stream->s.xine->verbosity >= XINE_VERBOSITY_DEBUG) {
@@ -2475,7 +2535,8 @@ static int play_internal (xine_stream_private_t *stream, int start_pos, int star
     xine_gettime (&ts2);
     diff = (int)(ts2.tv_nsec - ts1.tv_nsec) / 1000000;
     diff += (ts2.tv_sec - ts1.tv_sec) * 1000;
-    xprintf (stream->s.xine, XINE_VERBOSITY_DEBUG, "play_internal: ...done after %dms.\n", diff);
+    xprintf (stream->s.xine, XINE_VERBOSITY_DEBUG,
+      "play_internal (%p): ...done after %dms.\n", (void *)stream, diff);
   }
 
   return 1;
@@ -2596,7 +2657,7 @@ void xine_dispose (xine_stream_t *s) {
   if (stream->side_streams[0] != stream)
     return;
 
-  xprintf (stream->s.xine, XINE_VERBOSITY_DEBUG, "xine_dispose\n");
+  xprintf (stream->s.xine, XINE_VERBOSITY_DEBUG, "xine_dispose (%p).\n", (void *)stream);
   stream->status = XINE_STATUS_QUIT;
 
   xine_close (&stream->s);
@@ -2739,6 +2800,7 @@ xine_t *xine_new (void) {
   this->x.clock          = NULL;
   this->port_ticket      = NULL;
   this->speed_change_flags = 0;
+  this->strings.decoder_pri_help = NULL;
 #endif
 
   pthread_mutex_init (&this->speed_change_lock, NULL);
@@ -2881,6 +2943,11 @@ static void join_av_cb (void *this_gen, xine_cfg_entry_t *entry) {
   this->join_av = entry->num_value;
 }
 
+static void audio_update_linear_levels (void *this_gen, xine_cfg_entry_t *entry) {
+  xine_private_t *this = (xine_private_t *)this_gen;
+  this->audio_lin_levels = entry->num_value;
+}
+
 void xine_init (xine_t *this_gen) {
   xine_private_t *this = (xine_private_t *)this_gen;
 
@@ -3010,6 +3077,20 @@ void xine_init (xine_t *this_gen) {
         "contains the missing video track for it, and vice versa.\n"
         "This mainly serves as a test for engine side streams."),
       20, join_av_cb, this);
+
+  /*
+   * legacy support
+   */
+  this->audio_lin_levels = this->x.config->register_bool (this->x.config,
+    "audio.processing.linear_levels", 0,
+    _("Use pre-1.2.13 libxine audio level settings"),
+    /* Tell msgfmt that these "%" are _not_ c formats. */
+    /* xgettext:no-c-format */
+    _("On:  0..200 means 0..200% of audio amplification and equalizer amplitudes.\n"
+      "     Some applications rely on this, and use their own level mapping.\n"
+      "Off: 100 still means 100% or 0 dB. A step of 1 then means plus or minus\n"
+      "     1 dB for amplification, and 0.5 dB for equalizer.\n"),
+    0, audio_update_linear_levels, this);
 
   /*
    * keep track of all opened streams
@@ -3206,7 +3287,7 @@ int _x_get_speed (xine_stream_t *stream) {
 int xine_get_pos_length (xine_stream_t *s, int *pos_stream, int *pos_time, int *length_time) {
   xine_stream_private_t *stream = (xine_stream_private_t *)s;
   extra_info_t info;
-  int normpos, timepos;
+  int res, seek_count;
 
   stream = stream->side_streams[0];
   pthread_mutex_lock (&stream->frontend_lock);
@@ -3229,34 +3310,39 @@ int xine_get_pos_length (xine_stream_t *s, int *pos_stream, int *pos_time, int *
     }
   }
   xine_current_extra_info_get (stream, &info);
-  if (info.seek_count != stream->video_seek_count) {
+  /* this is only changed with frontend lock held -> safe to read here. */
+  seek_count = stream->first_frame.seek_count;
+  if (info.seek_count == seek_count) {
+    res = 1;
+  } else if (info.seek_count == seek_count - 1) {
+    /* this may happen shortly after stream start. */
+    res = 2;
+  } else {
     pthread_mutex_unlock (&stream->frontend_lock);
     return 0; /* position not yet known */
   }
-  normpos = info.input_normpos;
-  timepos = info.input_time;
 
   if (length_time) {
-    int length = 0;
+    int length = info.total_time;
     /* frontend lock prevents demux unload. To be very precise, we would need to
      * suspend demux here as well, and trash performance :-/
      * Well. Demux either knows length from the start, and value is constant.
      * Or, it grows with current position. We can do that, too. */
-    if (stream->demux.plugin)
+    if (!length && (res == 1) && stream->demux.plugin)
       length = stream->demux.plugin->get_stream_length (stream->demux.plugin);
     pthread_mutex_unlock (&stream->frontend_lock);
-    if ((length > 0) && (length < timepos))
-      length = timepos;
+    if ((length > 0) && (length < info.input_time))
+      length = info.input_time;
     *length_time = length;
   } else {
     pthread_mutex_unlock (&stream->frontend_lock);
   }
 
   if (pos_stream)
-    *pos_stream = normpos;
+    *pos_stream = info.input_normpos;
   if (pos_time)
-    *pos_time = timepos;
-  return 1;
+    *pos_time = info.input_time;
+  return res;
 }
 
 static int _x_get_current_frame_data (xine_stream_t *stream,
@@ -3947,7 +4033,7 @@ int _x_keyframes_add (xine_stream_t *s, xine_keyframes_entry_t *pos) {
     stream->index.size = KF_SIZE;
     pthread_mutex_unlock (&stream->index.lock);
     xprintf (stream->s.xine, XINE_VERBOSITY_DEBUG,
-      "keyframes: build index while playing.\n");
+      "keyframes (%p): build index while playing.\n", (void *)stream);
     return 0;
   }
   /* enlarge buf */
@@ -4020,7 +4106,7 @@ int _x_keyframes_set (xine_stream_t *s, xine_keyframes_entry_t *list, int size) 
   pthread_mutex_lock (&stream->index.lock);
   if (stream->index.array) {
     xprintf (stream->s.xine, XINE_VERBOSITY_DEBUG,
-      "keyframes: deleting index.\n");
+      "keyframes (%p): deleting index.\n", (void *)stream);
     free (stream->index.array);
   }
   stream->index.lastadd = 0;
@@ -4039,6 +4125,6 @@ int _x_keyframes_set (xine_stream_t *s, xine_keyframes_entry_t *list, int size) 
     memset (stream->index.array + size, 0, n * sizeof (xine_keyframes_entry_t));
   pthread_mutex_unlock (&stream->index.lock);
   xprintf (stream->s.xine, XINE_VERBOSITY_DEBUG,
-    "keyframes: got %d of them.\n", stream->index.used);
+    "keyframes (%p): got %d of them.\n", (void *)stream, stream->index.used);
   return 0;
 }

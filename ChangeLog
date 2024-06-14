@@ -1,3 +1,27 @@
+xine-lib (1.2.13) 2023-01-25
+  * Add dav1d 1.0.0 support.
+  * Add user video frame rate limiter.
+  * Add xine_query_stream_info ().
+  * Add user OpenGL2 scale modes.
+  - Add xine timespec tools.
+  * FFmpeg compatibility update.
+  * Update german translation.
+  * Improved DVB subtitle support.
+  * Improved HLS input.
+  * Improved AAC demux.
+  * Fix clang build.
+  * Fix build with libcaca.
+  * Fix fine time display.
+  * Fix .mp4 audio.
+  * Fix wav demuxer.
+  * Work around broken Mesa vdpau drivers.
+  * Fix OpenGL2 deep color display.
+  * Various small fixes.
+  * Optimize OpenGL2 video output.
+  * Optimize audio out.
+  * Optimize OSD.
+  * Small engine optimizations.
+
 xine-lib (1.2.12) 2022-03-09
   * Add string tree library (generic info parser).
   * Add OpenSL ES audio output plugin.

@@ -1,5 +1,6 @@
 #!/usr/bin/dh-exec
 usr/bin/xine-config
+usr/share/man/man1/xine-config.1
 usr/lib/${DEB_HOST_MULTIARCH}/libxine-interface.la
 usr/lib/${DEB_HOST_MULTIARCH}/libxine.la
 usr/lib/${DEB_HOST_MULTIARCH}/xine/plugins/*/mime.types

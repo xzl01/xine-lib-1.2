@@ -1,4 +1,4 @@
-AC_PREREQ(2.59)
+AC_PREREQ([2.59])
 
 m4_include([m4/objc.m4])
 
@@ -8,7 +8,7 @@ dnl AC_INIT so that XINE_VERSION_SPEC, which is an m4 macro, is available.
 m4_esyscmd([./version.sh])
 
 dnl Initialize autoconf, autoheader, and automake
-AC_INIT([xine-lib], XINE_VERSION_SPEC, [xine-bugs@lists.sourceforge.net])
+AC_INIT([xine-lib],[XINE_VERSION_SPEC],[xine-bugs@lists.sourceforge.net])
 AM_INIT_AUTOMAKE([1.11 -Wall])
 AC_CONFIG_SRCDIR([src/xine-engine/xine.c])
 AC_CONFIG_MACRO_DIR([m4])
@@ -165,7 +165,7 @@ dnl -------------------
 AC_PROG_CC
 AM_PROG_CC_C_O
 AC_GNU_SOURCE
-AC_ISC_POSIX
+AC_SEARCH_LIBS([strerror],[cposix])
 
 AC_PROG_OBJC
 
@@ -193,10 +193,8 @@ dnl Libtool
 dnl ---------------------------------------------
 
 AC_DISABLE_STATIC
-AC_LIBTOOL_DLOPEN
-AC_LIBTOOL_WIN32_DLL
 AC_PATH_MAGIC
-AC_PROG_LIBTOOL
+LT_INIT([dlopen win32-dll])
 AC_PROG_LIBTOOL_SANITYCHECK
 
 dnl --------------------
@@ -343,17 +341,11 @@ dnl -----------------------
 dnl checks for header files
 dnl -----------------------
 
-AC_HEADER_STDC
-
 AC_CHECK_HEADERS([alloca.h])
 AC_CHECK_HEADERS([assert.h byteswap.h dirent.h errno.h execinfo.h fcntl.h glob.h])
-AC_CHECK_HEADERS([libgen.h malloc.h netdb.h pwd.h stdbool.h ucontext.h])
+AC_CHECK_HEADERS([libgen.h malloc.h netdb.h pwd.h stdbool.h strings.h ucontext.h])
 AC_CHECK_HEADERS([sys/ioctl.h sys/mixer.h sys/mman.h sys/param.h sys/socket.h sys/times.h sys/wait.h sys/sysmacros.h])
 AC_CHECK_HEADERS([arpa/inet.h netinet/in.h])
-
-dnl This is duplicative due to AC_HEADER_STDC, but src/input/vcd stuff needs to
-dnl have HAVE_STDIO_H defined, or it won't compile.
-AC_CHECK_HEADERS([stdio.h])
 
 dnl cdrom ioctls (common for dvdnav and vcd)
 case "$host_os" in
@@ -634,6 +626,59 @@ my_shared_lib_prefix=""
 my_shared_lib_postfix=""
 AC_CHECK_LIB([:libz.so], [inflateEnd], [my_shared_lib_prefix=":lib"; my_shared_lib_postfix=".so"])
 AC_DEFUN([MY_SHARED_LIB_NAME], ["$my_shared_lib_prefix""$1""$my_shared_lib_postfix"])
+
+dnl __builtin_expect
+AC_MSG_CHECKING([for __builtin_expect])
+AC_LINK_IFELSE([AC_LANG_PROGRAM([[
+#include <stdio.h>
+#include <stdint.h>
+  ]],[[
+  const char *s = "this is a test.";
+  if (__builtin_expect ((uintptr_t)s & 3, 0))
+    printf ("string is unaligned.\n");
+  ]])],
+  [my_builtin_expect=yes], [my_builtin_expect=no])
+AC_MSG_RESULT([$my_builtin_expect])
+if test x"$my_builtin_expect" = x"yes" ; then
+  AC_DEFINE([TEST_LIKELY(_test,_likely_result)],[__builtin_expect (_test, _likely_result)],[Define to a working __builtin_expect.])
+else
+  AC_DEFINE([TEST_LIKELY(_test,_likely_result)],[(_test)],[Define to a working __builtin_expect.])
+fi
+
+dnl __builtin_assume_aligned
+AC_MSG_CHECKING([for available __builtin_assume_aligned arguments])
+my_builtin_assume_aligned_args=0
+AC_LINK_IFELSE([AC_LANG_PROGRAM([[
+#include <stdint.h>
+  ]],[[
+  const char *s = "this is a test.";
+  int *i = __builtin_assume_aligned (s - ((uintptr_t)s & 3), 4);
+  ]])],
+  [my_builtin_assume_aligned_args=2], [my_builtin_assume_aligned_args=0])
+if test $my_builtin_assume_aligned_args -gt 1 ; then
+  AC_LINK_IFELSE([AC_LANG_PROGRAM([[
+#include <stdint.h>
+    ]],[[
+  const char *s = "this is a test.";
+  int *i = __builtin_assume_aligned (s - ((uintptr_t)s & 3), 8, 4);
+    ]])],
+    [my_builtin_assume_aligned_args=3], [])
+fi
+AC_MSG_RESULT([$my_builtin_assume_aligned_args])
+if test $my_builtin_assume_aligned_args -gt 1 ; then
+  AC_DEFINE([ASSUME_ALIGNED_2(_ptr,_align)],[__builtin_assume_aligned (_ptr, _align)],
+    [Define to a __builtin_assume_aligned with 2 args.])
+else
+  AC_DEFINE([ASSUME_ALIGNED_2(_ptr,_align)],[(_ptr)],
+    [Define to a __builtin_assume_aligned with 2 args.])
+fi
+if test $my_builtin_assume_aligned_args -gt 2 ; then
+  AC_DEFINE([ASSUME_ALIGNED_3(_ptr,_align,_offs)],[__builtin_assume_aligned (_ptr, _align, _offs)],
+    [Define to a __builtin_assume_aligned with 3 args.])
+else
+  AC_DEFINE([ASSUME_ALIGNED_3(_ptr,_align,_offs)],[(_ptr)],
+    [Define to a __builtin_assume_aligned with 3 args.])
+fi
 
 dnl MY_CHECK_CPP_DEFINED - Check for a single (pre)#defined cpp macro.
 dnl Usage: MY_CHECK_CPP_DEFINED([name], [action-if-defined], [action-if-not-defined])
@@ -1709,4 +1754,3 @@ mv -f libtool.tmp libtool
 chmod +x libtool
 
 XINE_LIB_SUMMARY
-

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2004-2021 the xine project
+ * Copyright (C) 2004-2023 the xine project
  *
  * This file is part of xine, a free video player.
  *
@@ -333,6 +333,8 @@ static int read_iff_chunk(demux_iff_t *this) {
         case IFF_BMHD_CHUNK:
           if( this->bmhd == NULL )
             this->bmhd                  = (BitMapHeader *)calloc(1, sizeof(BitMapHeader));
+          if( this->bmhd == NULL )
+            break;
           this->bmhd->w                 = _X_BE_16(&buffer[0]);
           this->bmhd->h                 = _X_BE_16(&buffer[2]);
           this->bmhd->x                 = _X_BE_16(&buffer[4]);
@@ -409,12 +411,16 @@ static int read_iff_chunk(demux_iff_t *this) {
         case IFF_GRAB_CHUNK:
           if( this->grab == NULL )
             this->grab                  = (Point2D *)calloc(1, sizeof(Point2D));
+          if( this->grab == NULL )
+            break;
           this->grab->x                 = _X_BE_16(&buffer[0]);
           this->grab->y                 = _X_BE_16(&buffer[2]);
           break;
         case IFF_DEST_CHUNK:
           if( this->dest == NULL )
             this->dest                  = (DestMerge *)calloc(1, sizeof(DestMerge));
+          if( this->dest == NULL )
+            break;
           this->dest->depth             = buffer[0];
           this->dest->pad1              = buffer[1];
           this->dest->plane_pick        = _X_BE_16(&buffer[2]);
@@ -427,6 +433,8 @@ static int read_iff_chunk(demux_iff_t *this) {
         case IFF_CAMG_CHUNK:
           if( this->camg == NULL )
             this->camg                  = (CamgChunk *)calloc(1, sizeof(CamgChunk));
+          if( this->camg == NULL )
+            break;
           this->camg->view_modes        = _X_BE_32(&buffer[0]);
           this->bih.biCompression       = this->camg->view_modes;
           if( this->camg->view_modes & CAMG_PAL &&
@@ -446,6 +454,8 @@ static int read_iff_chunk(demux_iff_t *this) {
         case IFF_CCRT_CHUNK:
           if( this->ccrt == NULL )
             this->ccrt                  = (CcrtChunk *)calloc(1, sizeof(CcrtChunk));
+          if( this->ccrt == NULL )
+            break;
           this->ccrt->direction         = _X_BE_16(&buffer[0]);
           this->ccrt->start             = buffer[2];
           this->ccrt->end               = buffer[3];
@@ -456,12 +466,16 @@ static int read_iff_chunk(demux_iff_t *this) {
         case IFF_DPI_CHUNK:
           if( this->dpi == NULL )
             this->dpi                   = (DPIHeader *)calloc(1, sizeof(DPIHeader));
+          if( this->dpi == NULL )
+            break;
           this->dpi->x                  = _X_BE_16(&buffer[0]);
           this->dpi->y                  = _X_BE_16(&buffer[0]);
           break;
         case IFF_ANHD_CHUNK:
           if( this->anhd == NULL )
             this->anhd                  = (AnimHeader *)calloc(1, sizeof(AnimHeader));
+          if( this->anhd == NULL )
+            break;
           this->anhd->operation         = buffer[0];
           this->anhd->mask              = buffer[1];
           this->anhd->w                 = _X_BE_16(&buffer[2]);
@@ -503,6 +517,8 @@ static int read_iff_chunk(demux_iff_t *this) {
         case IFF_DPAN_CHUNK:
           if( this->dpan == NULL )
             this->dpan                  = (DPAnimChunk *)calloc(1, sizeof(DPAnimChunk));
+          if( this->dpan == NULL )
+            break;
           this->dpan->version           = _X_BE_16(&buffer[0]);
           this->dpan->nframes           = _X_BE_16(&buffer[2]);
           this->dpan->fps               = buffer[4];
@@ -813,6 +829,7 @@ static int demux_iff_send_chunk(demux_plugin_t *this_gen) {
           buf->extra_info->input_normpos = (int)((double)zw_pts * 65535 / input_length);
         buf->pts                        = zw_pts * 90000 / this->audio_bytes_per_second;
         buf->extra_info->input_time     = buf->pts / 90;
+        buf->extra_info->total_time     = this->running_time;
 
         if (remaining_sample_bytes > buf->max_size / this->audio_channels)
           buf->size                     = buf->max_size;
@@ -975,6 +992,8 @@ static int demux_iff_send_chunk(demux_plugin_t *this_gen) {
                                            65535 / this->input->get_length (this->input) );
         buf->pts                        = this->video_pts;
         buf->extra_info->input_time     = buf->pts / 90;
+        buf->extra_info->total_time     = this->running_time;
+
 
         if (size > buf->max_size) {
           buf->size = buf->max_size;
@@ -1076,8 +1095,10 @@ static void demux_iff_send_headers(demux_plugin_t *this_gen) {
       buf->decoder_flags                = BUF_FLAG_HEADER|BUF_FLAG_STDHEADER|BUF_FLAG_FRAMERATE|BUF_FLAG_FRAME_END;
       buf->decoder_info[0]              = this->video_pts_inc;  /* initial video_step */
       buf->decoder_info[1]              = 0;
+      if( this->bmhd ) {
       buf->decoder_info[2]              = this->bmhd->xaspect;
       buf->decoder_info[3]              = this->bmhd->yaspect;
+      }
       memcpy(buf->content, &this->bih, sizeof(this->bih));
 
       this->video_fifo->put(this->video_fifo, buf);

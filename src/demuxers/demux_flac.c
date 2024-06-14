@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2000-2019 the xine project
+ * Copyright (C) 2000-2023 the xine project
  *
  * This file is part of xine, a free video player.
  *
@@ -360,26 +360,20 @@ static int open_flac_file(demux_flac_t *flac) {
   unsigned int block_length;
   unsigned char buffer[FLAC_SEEKPOINT_SIZE];
   unsigned char *streaminfo = flac->streaminfo + sizeof(xine_waveformatex);
-  int i;
-
-  /* fetch the file signature, 4 bytes will read both the fLaC
-   * signature and the */
-  if (_x_demux_read_header(flac->input, &signature, 4) != 4)
-    return 0;
-
-  flac->input->seek(flac->input, 4, SEEK_SET);
+  int id3v2_tag_size, i;
 
   /* Unfortunately some FLAC files have an ID3 flag prefixed on them
    * before the actual FLAC headers... these are barely legal, but
    * users use them and want them working, so check and skip the ID3
    * tag if present.
    */
-  if ( id3v2_istag(signature) ) {
-    id3v2_parse_tag(flac->input, flac->stream, signature);
+  id3v2_tag_size = xine_parse_id3v2_tag (flac->stream, flac->input);
+  /* fetch the file signature, 4 bytes will read both the fLaC
+   * signature and the */
+  if (_x_demux_read_stream_header (flac->stream, flac->input, &signature, 4) != 4)
+    return 0;
 
-    if ( flac->input->read(flac->input, &signature, 4) != 4 )
-      return 0;
-  }
+  flac->input->seek (flac->input, id3v2_tag_size + 4, SEEK_SET);
 
   /* validate signature */
   if ( signature != ME_FOURCC('f', 'L', 'a', 'C') )
@@ -654,6 +648,8 @@ static int demux_flac_send_chunk(demux_plugin_t *this_gen) {
       buf->extra_info->input_normpos = normpos;
       buf->pts = pts;
       buf->extra_info->input_time = itime;
+      if (this->sample_rate)
+        buf->extra_info->total_time = (int64_t)this->total_samples * 1000 / this->sample_rate;
       pts = 0;
       itime = 0;
       this->audio_fifo->put (this->audio_fifo, buf);
@@ -691,6 +687,7 @@ static int demux_flac_send_chunk(demux_plugin_t *this_gen) {
     input_time_guess *= buf->extra_info->input_normpos;
     input_time_guess /= 65535;
     buf->extra_info->input_time = input_time_guess;
+    buf->extra_info->total_time = (int64_t)this->total_samples * 1000 / this->sample_rate;
   }
 
   if (this->input->read(this->input, buf->content, buf->size) !=

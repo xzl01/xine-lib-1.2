@@ -4,7 +4,7 @@ include /usr/share/dpkg/architecture.mk
 export DEB_BUILD_MAINT_OPTIONS = hardening=+all
 
 ifneq ($(DEB_HOST_GNU_TYPE),$(DEB_BUILD_GNU_TYPE))
-  $(error cross compiling is not supported by xine)
+	$(error cross compiling is not supported by xine)
 endif
 
 # predefine as empty
@@ -30,6 +30,7 @@ CONFIGURE_FLAGS := \
 	--with-wavpack \
 	--with-freetype \
 	--disable-vidix \
+	--disable-sndio \
 	--enable-directfb \
 	--disable-nosefart \
 	$(DEB_BUILD_CONFIG_OPTIONS) \
@@ -44,10 +45,21 @@ export V=1  # verbose log
 override_dh_auto_configure:
 	dh_auto_configure -- $(CONFIGURE_FLAGS)
 
+override_dh_clean:
+	rm -f $(CURDIR)/po/*.gmo
+	# Delete .cvsversion, to force version.sh to use preset version string (See #1070990)
+	rm -f $(CURDIR)/.cvsversion
+	dh_clean
+
 override_dh_installdocs:
 	dh_installdocs -plibxine2 -plibxine2-console -plibxine2-dev \
-		-plibxine2-ffmpeg -plibxine2-gnome -plibxine2-misc-plugins \
+		-plibxine2-ffmpeg -plibxine2-misc-plugins \
 		-plibxine2-vdr -plibxine2-x \
 		--link-doc=libxine2-bin
 	dh_installdocs -plibxine2-doc --doc-main-package libxine2-doc
 	dh_installdocs --remaining-packages
+
+override_dh_install:
+	# Avoid embedding the build path for reproducible builds
+	sed -i -e "s,$(CURDIR),BUILDPATH,g" debian/tmp/usr/lib/$(DEB_HOST_MULTIARCH)/pkgconfig/libxine.pc
+	dh_install

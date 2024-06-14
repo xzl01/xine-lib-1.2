@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2000-2018 the xine project
+ * Copyright (C) 2000-2023 the xine project
  *
  * This file is part of xine, a free video player.
  *
@@ -126,6 +126,7 @@ static void draw_fftgraph(post_plugin_fftgraph_t *this, vo_frame_t *frame) {
   int map_ptr;
   uint32_t yuy2_white;
   int line, line_min, line_max;
+  uint32_t *framebase = (uint32_t *)ASSUME_ALIGNED_2 (frame->base[0], 4);
 
   yuy2_white = be2me_32((0xFF << 24) |
 			(0x80 << 16) |
@@ -158,29 +159,25 @@ static void draw_fftgraph(post_plugin_fftgraph_t *this, vo_frame_t *frame) {
     line_max = (c + 1) * this->lines_per_channel;
 
     for(y = line; y < line_max; y++) {
-      xine_fast_memcpy(((uint32_t *)frame->base[0]) + map_ptr,
-		       this->map[y],
-		       FFTGRAPH_WIDTH * 2);
+      xine_fast_memcpy (framebase + map_ptr, this->map[y], FFTGRAPH_WIDTH * 2);
       map_ptr += (FFTGRAPH_WIDTH / 2);
     }
 
     for(y = line_min; y < line; y++) {
-      xine_fast_memcpy(((uint32_t *)frame->base[0]) + map_ptr,
-		       this->map[y],
-		       FFTGRAPH_WIDTH * 2);
+      xine_fast_memcpy (framebase + map_ptr, this->map[y], FFTGRAPH_WIDTH * 2);
       map_ptr += (FFTGRAPH_WIDTH / 2);
     }
   }
 
   /* top line */
   for (map_ptr = 0; map_ptr < FFTGRAPH_WIDTH / 2; map_ptr++)
-    ((uint32_t *)frame->base[0])[map_ptr] = yuy2_white;
+    framebase[map_ptr] = yuy2_white;
 
   /* lines under each channel */
   for (c = 0; c < this->channels; c++){
     for (i = 0, map_ptr = ((FFTGRAPH_HEIGHT * (c+1) / this->channels -1 ) * FFTGRAPH_WIDTH) / 2;
        i < FFTGRAPH_WIDTH / 2; i++, map_ptr++)
-    ((uint32_t *)frame->base[0])[map_ptr] = yuy2_white;
+    framebase[map_ptr] = yuy2_white;
   }
 
 }

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2000-2018 the xine project
+ * Copyright (C) 2000-2023 the xine project
  *
  * This file is part of xine, a free video player.
  *
@@ -64,6 +64,7 @@ typedef struct {
 
 
 static int demux_raw_dv_next (demux_raw_dv_t *this) {
+  int64_t length;
   buf_element_t *buf, *abuf;
   int n;
 
@@ -91,9 +92,11 @@ static int demux_raw_dv_next (demux_raw_dv_t *this) {
 
   buf->pts                    = this->pts;
   buf->extra_info->input_time = this->pts/90;
-  if( this->input->get_length (this->input) )
-    buf->extra_info->input_normpos = (int)( (double) this->input->get_current_pos (this->input) *
-                                     65535 / this->input->get_length (this->input) );
+  length = this->input->get_length (this->input);
+  if (length > 0) {
+    buf->extra_info->total_time = (int64_t)this->duration * length / (this->frame_size * 90);
+    buf->extra_info->input_normpos = (double)this->input->get_current_pos(this->input) * 65535 / length;
+  }
   buf->extra_info->frame_number  = this->cur_frame;
   buf->type                   = BUF_VIDEO_DV;
 
@@ -108,6 +111,7 @@ static int demux_raw_dv_next (demux_raw_dv_t *this) {
     abuf->size   = buf->size;
     abuf->decoder_flags = buf->decoder_flags;
     abuf->extra_info->input_time = buf->extra_info->input_time;
+    abuf->extra_info->total_time = buf->extra_info->total_time;
     abuf->extra_info->input_normpos = buf->extra_info->input_normpos;
     this->audio_fifo->put (this->audio_fifo, abuf);
   }
@@ -242,12 +246,12 @@ static void demux_raw_dv_send_headers (demux_plugin_t *this_gen) {
           /* printf("aaux %d: %2.2x %2.2x %2.2x %2.2x %2.2x\n",
            j, s[0], s[1], s[2], s[3], s[4]);
           */
-          int smp, flag;
+          int smp/*, flag*/;
 
           done = 1;
 
           smp = (s[4] >> 3) & 0x07;
-          flag = s[3] & 0x20;
+        /*flag = s[3] & 0x20;
 
           if (flag == 0) {
             switch (smp) {
@@ -261,7 +265,7 @@ static void demux_raw_dv_send_headers (demux_plugin_t *this_gen) {
                 abuf->decoder_info[1] = 32000;
                 break;
             }
-          } else {
+          } else {*/
             switch (smp) {
               case 0:
                 abuf->decoder_info[1] = 48000;
@@ -273,7 +277,7 @@ static void demux_raw_dv_send_headers (demux_plugin_t *this_gen) {
                 abuf->decoder_info[1] = 32000;
                 break;
             }
-          }
+        /*}*/
         }
       }
     }

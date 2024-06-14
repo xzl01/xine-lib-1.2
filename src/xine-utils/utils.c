@@ -798,7 +798,7 @@ int _x_set_file_close_on_exec(int fd)
 #ifndef WIN32
   return fcntl(fd, F_SETFD, FD_CLOEXEC);
 #else
-  return SetHandleInformation((HANDLE)_get_osfhandle(fd), HANDLE_FLAG_INHERIT, 0);
+  return SetHandleInformation((HANDLE)_get_osfhandle(fd), HANDLE_FLAG_INHERIT, 0) ? 0 : -1;
 #endif
 }
 
@@ -807,7 +807,7 @@ int _x_set_socket_close_on_exec(int s)
 #ifndef WIN32
   return fcntl(s, F_SETFD, FD_CLOEXEC);
 #else
-  return SetHandleInformation((HANDLE)(intptr_t)s, HANDLE_FLAG_INHERIT, 0);
+  return SetHandleInformation((HANDLE)(intptr_t)s, HANDLE_FLAG_INHERIT, 0) ? 0 : -1;
 #endif
 }
 
@@ -1172,11 +1172,16 @@ size_t xine_fast_string_need (size_t max_strlen) {
 }
 
 char *xine_fast_string_init (char *buf, size_t bsize) {
+  union {
+    char *b;
+    uint32_t *u;
+  } u;
   uint32_t *fs;
 
   if (!buf || (bsize < XFST_MIN_SIZE))
     return NULL;
-  fs = (uint32_t *)(((uintptr_t)buf + 3 * 4 + XFST_ALIGN - 1) & ~(XFST_ALIGN - 1));
+  u.b = (char *)(((uintptr_t)buf + 3 * 4 + XFST_ALIGN - 1) & ~(XFST_ALIGN - 1));
+  fs = u.u;
   fs[-3] = (char *)fs - buf;
   fs[-2] = (bsize - fs[-3] - 2) | 0x80000000;
   fs[-1] = 0;
@@ -1185,13 +1190,21 @@ char *xine_fast_string_init (char *buf, size_t bsize) {
 }
 
 size_t xine_fast_string_max (char *fast_string) {
-  uint32_t *fs = (uint32_t *)fast_string;
+  const union {
+    char *b;
+    uint32_t *u;
+  } u = { fast_string };
+  uint32_t *fs = u.u;
 
   return fs ? (fs[-2] & 0x7fffffff) : 0;
 }
 
 char *xine_fast_string_set (char *fast_string, const char *text, size_t tsize) {
-  uint32_t *fs = (uint32_t *)fast_string;
+  const union {
+    char *b;
+    uint32_t *u;
+  } u = { fast_string };
+  uint32_t *fs = u.u;
 
   if (fs) {
     if (fs[-2] & 0x80000000) {
@@ -1236,10 +1249,14 @@ char *xine_fast_string_set (char *fast_string, const char *text, size_t tsize) {
 
 int xine_fast_string_cmp (char *fast_string1, char *fast_string2) {
   const union {
+    char *b;
+    uint32_t *u;
+  } u1 = { fast_string1 }, u2 = { fast_string2 };
+  const union {
     uint32_t v;
     char *is_little;
   } endian = {1};
-  uint32_t *fs1 = (uint32_t *)fast_string1, *fs2 = (uint32_t *)fast_string2, *test1 = fs1, *test2 = fs2;
+  uint32_t *fs1 = u1.u, *fs2 = u2.u, *test1 = fs1, *test2 = fs2;
   uint32_t end = fs1[-1] + 1, v1, v2;
 
   fs1[end >> 2] |= _xine_fast_string_mask[end & 3].v;
@@ -1258,11 +1275,16 @@ int xine_fast_string_cmp (char *fast_string1, char *fast_string2) {
 }
 
 void xine_fast_string_free (char **fast_string) {
+  union {
+    char *b;
+    uint32_t *u;
+  } u;
   uint32_t *fs;
 
   if (!fast_string)
     return;
-  fs = (uint32_t *)*fast_string;
+  u.b = *fast_string;
+  fs = u.u;
   if (!fs)
     return;
   *fast_string = NULL;
@@ -1284,7 +1306,6 @@ xine_fast_text_t *xine_fast_text_load (const char *filename, size_t max_size) {
   size_t filesize;
   FILE *f;
   xine_fast_text_t *xft;
-  uint8_t *mem;
   uint32_t *w;
 
   if (!filename) {
@@ -1299,21 +1320,24 @@ xine_fast_text_t *xine_fast_text_load (const char *filename, size_t max_size) {
   f = fopen (filename, "rb");
   if (!f)
     return NULL;
-  if (fseek (f, 0, SEEK_END))
+  if (fseek (f, 0, SEEK_END)) {
+    fclose(f);
     return NULL;
+  }
   filesize = ftell (f);
-  if (fseek (f, 0, SEEK_SET))
+  if (fseek (f, 0, SEEK_SET)) {
+    fclose(f);
     return NULL;
+  }
 
   if (filesize > max_size)
     filesize = max_size;
-  mem = malloc (sizeof (*xft) + ((filesize + 3) & ~3));
-  if (!mem) {
+  xft = malloc (sizeof (*xft) + ((filesize + 3) & ~3));
+  if (!xft) {
     fclose (f);
     errno = ENOMEM;
     return NULL;
   }
-  xft = (xine_fast_text_t *)mem;
   xft->scan_here = 0;
   xft->line_start = 0;
   xft->flags = 0;
@@ -1399,3 +1423,860 @@ void xine_fast_text_unload (xine_fast_text_t **xft) {
     *xft = NULL;
   }
 }
+
+typedef struct {
+  uint32_t refs;
+  uint32_t len;
+  uint32_t magic;
+} _xine_ref_string_head_t;
+
+static _xine_ref_string_head_t *_xine_ref_string_head (char *s) {
+  union {
+    char *b;
+    _xine_ref_string_head_t *r;
+  } u;
+  const union {
+    uint8_t b[4];
+    uint32_t v;
+  } _magic = {{'x', 'r', 's', 'h'}};
+  _xine_ref_string_head_t *h;
+
+  if (((uintptr_t)s & 7) != 4)
+    return NULL;
+  u.b = s;
+  h = u.r - 1;
+  if (h->magic != _magic.v)
+    return NULL;
+  return h;
+}
+
+char *xine_ref_string_ref (const char *s, int len) {
+  const union {
+    uint8_t b[4];
+    uint32_t v;
+  } _magic = {{'x', 'r', 's', 'h'}};
+  uint32_t _len;
+  char *_s = (char *)s;
+  _xine_ref_string_head_t *h = _xine_ref_string_head (_s);
+
+  if (h) {
+    h->refs += 1;
+    return _s;
+  }
+  if (!s)
+    return NULL;
+  _len = len < 0 ? strlen (s) : (size_t)len;
+  _s = malloc (sizeof (_xine_ref_string_head_t) + _len + 1);
+  if (!_s)
+    return NULL;
+  h = (_xine_ref_string_head_t *)_s;
+  _s += sizeof (_xine_ref_string_head_t);
+  h->refs = 1;
+  h->len = _len;
+  h->magic = _magic.v;
+  memcpy (_s, s, _len + 1);
+  return _s;
+}
+
+size_t xine_ref_string_len (const char *s) {
+  _xine_ref_string_head_t *h = _xine_ref_string_head ((char *)s);
+
+  return h ? h->len
+       : s ? strlen (s)
+       : 0;
+}
+
+int xine_ref_string_unref (char **s) {
+  _xine_ref_string_head_t *h;
+
+  if (!s)
+    return 0;
+  h = _xine_ref_string_head (*s);
+  if (!h) {
+    free (*s);
+    *s = NULL;
+    return 0;
+  }
+  if (h->refs == 1) {
+    free (h);
+    *s = NULL;
+    return 0;
+  }
+  return --h->refs;
+}
+
+
+#define XPQ_BACKLOG_LD 3
+#define XPQ_BACKLOG_SIZE (1 << XPQ_BACKLOG_LD)
+#define XPQ_BACKLOG_MASK (XPQ_BACKLOG_SIZE - 1)
+
+typedef enum {
+  XPQ_A_NONE = 0,
+  XPQ_A_STALL,
+  XPQ_A_PUT,
+  XPQ_A_READY,
+  XPQ_A_GET
+} xine_pts_queue_action_t;
+
+struct xine_pts_queue_s {
+  struct {
+    int64_t last_pts;
+    uint64_t pos;
+    struct {
+      int64_t pts;
+      uint64_t pos;
+    } backlog[XPQ_BACKLOG_SIZE];
+    uint32_t ring_pos;
+  } put;
+  struct {
+    uint64_t pos;
+    uint32_t bytes;
+    uint32_t num;
+  } get;
+  xine_pts_queue_action_t last_action;
+};
+
+xine_pts_queue_t *xine_pts_queue_new (void) {
+  xine_pts_queue_t *q = calloc (1, sizeof (*q));
+  return q;
+}
+
+void xine_pts_queue_reset (xine_pts_queue_t *q) {
+  if (!q)
+    return;
+  memset (q, 0, sizeof (*q));
+}
+
+void xine_pts_queue_put (xine_pts_queue_t *q, size_t bytes, int64_t pts) {
+  xine_pts_queue_action_t a = bytes ? XPQ_A_PUT : XPQ_A_READY;
+  if (!q)
+    return;
+  if (pts && (pts != q->put.last_pts)) {
+    uint32_t u = q->put.ring_pos;
+    q->put.last_pts = pts;
+    if (q->last_action != XPQ_A_STALL) {
+      u = (u + 1) & XPQ_BACKLOG_MASK;
+    } else {
+      a = XPQ_A_STALL;
+      q->get.pos = q->put.backlog[u].pos;
+    }
+    q->put.ring_pos = u;
+    if (q->put.backlog[u].pts) {
+      /* backlog overrun. parser seems be dropping data. */
+      q->get.pos = q->put.backlog[u].pos;
+      memset (q->put.backlog, 0, sizeof (q->put.backlog));
+      a = XPQ_A_STALL;
+    }
+    q->put.backlog[u].pts = pts;
+    q->put.backlog[u].pos = q->put.pos;
+  }
+  q->put.pos += bytes;
+  q->last_action = a;
+}
+    
+int64_t xine_pts_queue_get (xine_pts_queue_t *q, size_t bytes) {
+  int64_t pts = 0;
+  uint32_t u;
+  if (!q)
+    return 0;
+  /* TODO: parser dropped data. */
+  /* find suitable pts, or 0. */
+  u = q->put.ring_pos;
+  do {
+    if (q->put.backlog[u].pos <= q->get.pos)
+      break;
+    u = (u + XPQ_BACKLOG_SIZE - 1) & XPQ_BACKLOG_MASK;
+  } while (u != q->put.ring_pos);
+  if (q->put.backlog[u].pos <= q->get.pos) {
+    pts = q->put.backlog[u].pts;
+    /* bytes == 0: just peek. bytes != 0: consume. */
+    if (bytes) {
+      q->put.backlog[u].pos = 0;
+      q->put.backlog[u].pts = 0;
+    }
+  }
+  /* advance. */
+  q->get.pos += bytes;
+  /* parser returned more than it has (filler frames, generated heads). */
+  if (q->get.pos > q->put.pos)
+    q->get.pos = q->put.pos;
+  /* frame size stats. */
+  q->get.bytes += bytes;
+  q->get.num++;
+  if ((q->get.bytes | q->get.num) & 0x80000000) {
+    q->get.bytes >>= 1;
+    q->get.num >>= 1;
+  }
+  q->last_action = XPQ_A_GET;
+  return pts;
+}
+
+void xine_pts_queue_delete (xine_pts_queue_t **q) {
+  if (q && *q) {
+    free (*q);
+    *q = NULL;
+  }
+}
+
+
+/** xine timespec magic, taken from TJtools. */
+int xine_ts_from_string (struct timespec *ts, const char *s) {
+# define _DC_DIGIT  1
+# define _DC_SPACE  2
+# define _DC_Tt     4
+# define _DC_Zz     8
+# define _DC_PLUS  16
+# define _DC_MINUS 32
+# define _DC_DOT   64
+# define _DC_END  128
+  static const uint8_t tab_char[256] = {
+    ['0'] = _DC_DIGIT, ['1'] = _DC_DIGIT, ['2'] = _DC_DIGIT, ['3'] = _DC_DIGIT,
+    ['4'] = _DC_DIGIT, ['5'] = _DC_DIGIT, ['6'] = _DC_DIGIT, ['7'] = _DC_DIGIT,
+    ['8'] = _DC_DIGIT, ['9'] = _DC_DIGIT,
+    ['\t'] = _DC_SPACE, ['\r'] = _DC_SPACE, ['\n'] = _DC_SPACE, [' '] = _DC_SPACE,
+    ['T'] = _DC_Tt, ['t'] = _DC_Tt,
+    ['Z'] = _DC_Zz, ['z'] = _DC_Zz,
+    ['+'] = _DC_PLUS,
+    ['-'] = _DC_MINUS,
+    ['.'] = _DC_DOT,
+    [0] = _DC_END
+  };
+  enum {
+    _DV_YEAR = 0, /* 1900- */
+    _DV_MONTH,    /* 1-12 */
+    _DV_DAY,      /* 1-31 */
+    _DV_WEEKDAY,  /* 0-6 */
+    _DV_AM,       /* 0 (24h), 1 (12-11 before noon), 2 (12-11 after noon) */
+    _DV_HOUR,     /* 0-23 */
+    _DV_MINUTE,   /* 0-59 */
+    _DV_SECOND,   /* 0-59 */
+    _DV_FRAC,     /* 0-999999999 */
+    _DV_OFFS,     /* in seconds */
+    _DV_LAST
+  };
+  static const struct {
+    char s[11];
+    uint8_t type;
+    int value;
+  } strings [] = {
+    {"am         ", _DV_AM,            1},
+    {"april      ", _DV_MONTH,         4},
+    {"august     ", _DV_MONTH,         8},
+    {"cdt        ", _DV_OFFS,     -18000},
+    {"cst        ", _DV_OFFS,     -21600},
+    {"december   ", _DV_MONTH,        12},
+    {"edt        ", _DV_OFFS,     -14400},
+    {"est        ", _DV_OFFS,     -18000},
+    {"february   ", _DV_MONTH,         2},
+    {"friday     ", _DV_WEEKDAY,       5},
+    {"gmt        ", _DV_OFFS,          0},
+    {"january    ", _DV_MONTH,         1},
+    {"july       ", _DV_MONTH,         7},
+    {"june       ", _DV_MONTH,         6},
+    {"march      ", _DV_MONTH,         3},
+    {"may        ", _DV_MONTH,         5},
+    {"mdt        ", _DV_OFFS,     -21600},
+    {"monday     ", _DV_WEEKDAY,       1},
+    {"mst        ", _DV_OFFS,     -25200},
+    {"november   ", _DV_MONTH,        11},
+    {"october    ", _DV_MONTH,        10},
+    {"pdt        ", _DV_OFFS,     -25200},
+    {"pm         ", _DV_AM,            2},
+    {"pst        ", _DV_OFFS,     -28800},
+    {"saturday   ", _DV_WEEKDAY,       6},
+    {"september  ", _DV_MONTH,         9},
+    {"sunday     ", _DV_WEEKDAY,       0},
+    {"thursday   ", _DV_WEEKDAY,       4},
+    {"tuesday    ", _DV_WEEKDAY,       2},
+    {"utc        ", _DV_OFFS,          0},
+    {"wednesday  ", _DV_WEEKDAY,       3},
+  };
+  time_t res;
+  int value[_DV_LAST] = {
+    [_DV_YEAR]    = 1970,
+    [_DV_MONTH]   = 1,
+    [_DV_DAY]     = 1
+  };
+#define _DV_HAVE_DATE 1
+#define _DV_HAVE_TIME 2
+#define _DV_HAVE_ZONE 4
+#define _DV_HAVE_JTIME 16
+  static const uint32_t word_have[_DV_LAST] = {
+    [_DV_OFFS] = _DV_HAVE_ZONE
+  };
+  static const uint32_t frac[] = {
+    100000000,  10000000,   1000000,
+       100000,     10000,      1000,
+          100,        10,         1
+  };
+  uint64_t jtime = 0;
+  uint32_t have = 0;
+  const uint8_t *p;
+
+  if (!ts)
+    return EINVAL;
+  if (!s)
+    return 0;
+
+  p = (const uint8_t *)s;
+
+  if (((p[0] | 0x20) == 'p') && ((p[1] | 0x20) == 't')) {
+  /* PT5H30M55S */
+    uint32_t _sec = 0, _frac = 0;
+    p += 2;
+    while (1) {
+      uint32_t v = 0, f = 0, z;
+      while ((z = p[0] ^ '0') < 10u)
+        v = v * 10u + z, p++;
+      if (p[0] == '.') {
+        uint32_t u = 0;
+        p++;
+        while (((z = p[0] ^ '0') < 10u) && (u < 9))
+          f += frac[u++] * z, p++;
+        while ((z = p[0] ^ '0') < 10u)
+          p++;
+      }
+      z = p[0] | 0x20;
+      if (z == 'h')
+        _sec += 3600u * v;
+      else if (z == 'm')
+        _sec += 60u * v;
+      else if (z == 's')
+        _sec += v, _frac = f;
+      else
+        break;
+      p++;
+    }
+    ts->tv_sec = _sec;
+    ts->tv_nsec = _frac;
+    return 0;
+  }
+
+  do {
+    const uint8_t *b;
+    uint8_t buf[12], type;
+    uint32_t len, digits = 0;
+    /* skip whitespace */
+    while (tab_char[*p] & _DC_SPACE)
+      p++;
+    /* get word */
+    type = tab_char[*p];
+    if (type & _DC_Tt)
+      type = tab_char[*++p];
+    b = p;
+    if (type & _DC_Zz) {
+      type = tab_char[*++p];
+      if (type & (_DC_PLUS + _DC_MINUS)) {
+        b = p;
+        type = tab_char[*++p];
+      }
+    }
+    if (type & (_DC_PLUS + _DC_MINUS + _DC_DOT))
+      p++;
+    while (1) {
+      while (!((type = tab_char[*p]) & (_DC_SPACE + _DC_Tt + _DC_Zz + _DC_PLUS + _DC_MINUS + _DC_DOT + _DC_END)))
+        digits += type & _DC_DIGIT, p++;
+      len = p - b;
+      if (type & (_DC_SPACE + _DC_PLUS + _DC_DOT + _DC_END))
+        break;
+      if ((type & (_DC_Tt + _DC_Zz)) && digits)
+        break;
+      if ((type & _DC_MINUS) && !(((len == 4) && (digits == 4)) || ((len == 7) && (digits == 6))))
+        break;
+      p++;
+    }
+    /* evaluate */
+    if ((len > 5) && (digits == len)) {
+      uint64_t v = 0;
+      uint32_t u;
+      for (u = 0; u < len; u++)
+        v = v * 10u + (b[u] ^ '0');
+      jtime = v;
+      have |= _DV_HAVE_JTIME;
+    } else if ((len > 1) && (digits + 1 == len) && (b[0] == '@')) {
+      uint64_t v = 0;
+      uint32_t u;
+      for (u = 1; u < len; u++)
+        v = v * 10u + (b[u] ^ '0');
+      jtime = v;
+      have |= _DV_HAVE_JTIME;
+    } else if ((digits + 1 == len) && (b[0] == '.')) {
+      uint32_t u;
+      b++;
+      len--;
+      if (len > 9)
+        len = 9;
+      value[_DV_FRAC] = 0;
+      for (u = 0; u < len; u++)
+        value[_DV_FRAC] += frac[u] * (b[u] ^ '0');
+    } else if ((len == 2) && (digits == 2)) {
+      /* DD */
+      value[_DV_DAY] = (b[0] ^ '0') * 10u + (b[1] ^ '0');
+    } else if ((len == 4) && (digits >= 3)) {
+      if ((digits == 3) && (b[1] == ':')) {
+        /* h:mm */
+        value[_DV_HOUR] = b[0] ^ '0';
+        value[_DV_MINUTE] = (b[2] ^ '0') * 10u + (b[3] ^ '0');
+        value[_DV_SECOND] = 0;
+        have |= _DV_HAVE_TIME;
+      } else if (digits == 4) {
+        /* YYYY */
+        value[_DV_YEAR] = (b[0] ^ '0') * 1000u + (b[1] ^ '0') * 100u + (b[2] ^ '0') * 10u + (b[3] ^ '0');
+        have |= _DV_HAVE_DATE;
+      }
+    } else if ((len == 5) && (digits == 4)) {
+      if (b[2] == ':') {
+        /* hh:mm */
+        value[_DV_HOUR] = (b[0] ^ '0') * 10u + (b[1] ^ '0');
+        value[_DV_MINUTE] = (b[3] ^ '0') * 10u + (b[4] ^ '0');
+        value[_DV_SECOND] = 0;
+        have |= _DV_HAVE_TIME;
+      } else if (tab_char[b[0]] & (_DC_Zz + _DC_PLUS + _DC_MINUS)) {
+        /* [Zz+-]ohom */
+        value[_DV_OFFS] = (b[1] ^ '0') * 36000u + (b[2] ^ '0') * 3600u + (b[3] ^ '0') * 600u + (b[4] ^ '0') * 60u;
+        if (b[0] == '-')
+          value[_DV_OFFS] = -value[_DV_OFFS];
+        have |= _DV_HAVE_ZONE;
+      }
+    } else if ((len == 7) && (digits == 5) && (b[1] == ':') && (b[4] == ':')) {
+      /* h:mm:ss */
+      value[_DV_HOUR] = b[0] ^ '0';
+      value[_DV_MINUTE] = (b[2] ^ '0') * 10u + (b[3] ^ '0');
+      value[_DV_SECOND] = (b[5] ^ '0') * 10u + (b[6] ^ '0');
+      have |= _DV_HAVE_TIME;
+    } else if ((len == 6) && (digits == 4) && (tab_char[b[0]] & (_DC_Zz + _DC_PLUS + _DC_MINUS)) && (b[3] == ':')) {
+      /* [Zz+-]oh:om */
+      value[_DV_OFFS] = (b[1] ^ '0') * 36000u + (b[2] ^ '0') * 3600u + (b[4] ^ '0') * 600u + (b[5] ^ '0') * 60u;
+      if (b[0] == '-')
+        value[_DV_OFFS] = -value[_DV_OFFS];
+      have |= _DV_HAVE_ZONE;
+    } else if ((len == 8) && (digits == 6)) {
+      if ((b[2] == ':') && (b[5] == ':')) {
+        /* hh:mm:ss */
+        value[_DV_HOUR] = (b[0] ^ '0') * 10u + (b[1] ^ '0');
+        value[_DV_MINUTE] = (b[3] ^ '0') * 10u + (b[4] ^ '0');
+        value[_DV_SECOND] = (b[6] ^ '0') * 10u + (b[7] ^ '0');
+        have |= _DV_HAVE_TIME;
+      } else if ((b[2] == '/') && (b[5] == '/')) {
+        /* MM/DD/YY */
+        value[_DV_MONTH] = (b[0] ^ '0') * 10u + (b[1] ^ '0');
+        value[_DV_DAY] = (b[3] ^ '0') * 10u + (b[4] ^ '0');
+        value[_DV_YEAR] = (b[6] ^ '0') * 10u + (b[7] ^ '0');
+        value[_DV_YEAR] += (value[_DV_YEAR] < 70) ? 2000 : 1900;
+        have |= _DV_HAVE_DATE;
+      }
+    } else if ((len == 10) && (digits == 8)) {
+      if ((b[2] == '/') && (b[5] == '/')) {
+        /* MM/DD/YYYY */
+        value[_DV_MONTH] = (b[0] ^ '0') * 10u + (b[1] ^ '0');
+        value[_DV_DAY] = (b[3] ^ '0') * 10u + (b[4] ^ '0');
+        value[_DV_YEAR] = (b[6] ^ '0') * 1000u + (b[7] ^ '0') * 100u + (b[8] ^ '0') * 10u + (b[9] ^ '0');
+        have |= _DV_HAVE_DATE;
+      } else if ((b[4] == '-') && (b[7] == '-')) {
+        /* YYYY-MM-DD */
+        value[_DV_YEAR] = (b[0] ^ '0') * 1000u + (b[1] ^ '0') * 100u + (b[2] ^ '0') * 10u + (b[3] ^ '0');
+        value[_DV_MONTH] = (b[5] ^ '0') * 10u + (b[6] ^ '0');
+        value[_DV_DAY] = (b[8] ^ '0') * 10u + (b[9] ^ '0');
+        have |= _DV_HAVE_DATE;
+      }
+    } else if ((len > 0) && (len < sizeof (buf))) {
+      uint32_t _b = 0, _m, _e = sizeof (strings) / sizeof (strings[0]);
+      int _d;
+      /* known word */
+      memset (buf, ' ', sizeof (buf));
+      for (_m = 0; _m < len; _m++)
+        buf[_m] |= b[_m];
+      do {
+        _m = (_b + _e) >> 1;
+        _d = memcmp (buf, strings[_m].s, sizeof (buf) - 1);
+        if (_d < 0) {
+          _e = _m;
+        } else if (_d > 0) {
+          _b = _m + 1;
+        } else {
+          break;
+        }
+      } while (_b < _e);
+      if (!_d) {
+        value[strings[_m].type] = strings[_m].value;
+        have |= word_have[strings[_m].type];
+      }
+    }
+  } while (*p);
+  if (value[_DV_AM]) {
+    if ((value[_DV_AM] == 1) && (value[_DV_HOUR] >= 12))
+      value[_DV_HOUR] -= 12;
+    else if ((value[_DV_AM] == 2) && (value[_DV_HOUR] < 12))
+      value[_DV_HOUR] += 12;
+  }
+  /* relative time */
+  if ((have & (_DV_HAVE_DATE + _DV_HAVE_TIME)) == 0) {
+    if (have & _DV_HAVE_JTIME) {
+      ts->tv_sec = jtime;
+      ts->tv_nsec = value[_DV_FRAC];
+    }
+    return 0;
+  }
+  if ((have & _DV_HAVE_DATE) == 0) {
+    ts->tv_sec = ts->tv_sec / (24 * 60 * 60) * (24 * 60 * 60)
+               + value[_DV_HOUR] * 3600 + value[_DV_MINUTE] * 60 + value[_DV_SECOND]
+               - value[_DV_OFFS];
+    ts->tv_nsec = value[_DV_FRAC];
+    return 0;
+  }
+  /* with date */
+  {
+    struct tm tm = {
+      .tm_sec    = value[_DV_SECOND],
+      .tm_min    = value[_DV_MINUTE],
+      .tm_hour   = value[_DV_HOUR],
+      .tm_mday   = value[_DV_DAY],
+      .tm_mon    = value[_DV_MONTH] - 1,
+      .tm_year   = value[_DV_YEAR] - 1900,
+      .tm_wday   = value[_DV_WEEKDAY],
+      .tm_isdst  = 0
+    };
+    const char *tz = getenv ("TZ");
+    if (tz) {
+      if (tz[0]) {
+        char *_tz = strdup (tz);
+        setenv ("TZ", "", 1);
+        tzset ();
+        res = mktime (&tm);
+        setenv ("TZ", _tz, 1);
+        free (_tz);
+        tzset ();
+      } else {
+        tzset ();
+        res = mktime (&tm);
+      }
+    } else {
+      setenv ("TZ", "", 1);
+      tzset ();
+      res = mktime (&tm);
+      unsetenv ("TZ");
+      tzset ();
+    }
+  }
+  if (res == -1)
+    return errno;
+  res -= value[_DV_OFFS];
+  ts->tv_sec = res;
+  ts->tv_nsec = value[_DV_FRAC];
+  return 0;
+}
+
+void xine_ts_add (struct timespec *a, const struct timespec *b) {
+  if (!a || !b)
+    return;
+  a->tv_sec += b->tv_sec;
+  a->tv_nsec += b->tv_nsec;
+  if (a->tv_nsec >= 1000000000) {
+    a->tv_nsec -= 1000000000;
+    a->tv_sec += 1;
+  }
+}
+
+void xine_ts_sub (struct timespec *a, const struct timespec *b) {
+  if (!a || !b)
+    return;
+  a->tv_sec -= b->tv_sec;
+  a->tv_nsec -= b->tv_nsec;
+  if (a->tv_nsec < 0) {
+    a->tv_nsec += 1000000000;
+    a->tv_sec -= 1;
+  }
+}
+
+int64_t xine_ts_to_timebase (const struct timespec *ts, uint32_t timebase) {
+  uint32_t fracbase;
+  int64_t res;
+  if (!ts || !timebase)
+    return 0;
+  fracbase = (1000000000u + (timebase >> 1)) / timebase;
+  res = (int64_t)ts->tv_sec * (int32_t)timebase;
+  if (fracbase)
+    res += ((uint32_t)ts->tv_nsec + (fracbase >> 1)) / fracbase;
+  return res;
+}
+
+/** xine rational numbers, taken from TJtools. */
+void xine_rats_shorten (xine_rats_t *value) {
+  static const unsigned char primediffs[] = {
+    /* just say 'erat -d 75 3 32768' ;-) */
+   3,  2,  2,  4,  2,  4,  2,  4,  6,  2,  6,  4,  2,  4,  6,  6,  2,  6, 
+   4,  2,  6,  4,  6,  8,  4,  2,  4,  2,  4, 14,  4,  6,  2, 10,  2,  6, 
+   6,  4,  6,  6,  2, 10,  2,  4,  2, 12, 12,  4,  2,  4,  6,  2, 10,  6, 
+   6,  6,  2,  6,  4,  2, 10, 14,  4,  2,  4, 14,  6, 10,  2,  4,  6,  8, 
+   6,  6,  4,  6,  8,  4,  8, 10,  2, 10,  2,  6,  4,  6,  8,  4,  2,  4, 
+  12,  8,  4,  8,  4,  6, 12,  2, 18,  6, 10,  6,  6,  2,  6, 10,  6,  6, 
+   2,  6,  6,  4,  2, 12, 10,  2,  4,  6,  6,  2, 12,  4,  6,  8, 10,  8, 
+  10,  8,  6,  6,  4,  8,  6,  4,  8,  4, 14, 10, 12,  2, 10,  2,  4,  2, 
+  10, 14,  4,  2,  4, 14,  4,  2,  4, 20,  4,  8, 10,  8,  4,  6,  6, 14, 
+   4,  6,  6,  8,  6, 12,  4,  6,  2, 10,  2,  6, 10,  2, 10,  2,  6, 18, 
+   4,  2,  4,  6,  6,  8,  6,  6, 22,  2, 10,  8, 10,  6,  6,  8, 12,  4, 
+   6,  6,  2,  6, 12, 10, 18,  2,  4,  6,  2,  6,  4,  2,  4, 12,  2,  6, 
+  34,  6,  6,  8, 18, 10, 14,  4,  2,  4,  6,  8,  4,  2,  6, 12, 10,  2, 
+   4,  2,  4,  6, 12, 12,  8, 12,  6,  4,  6,  8,  4,  8,  4, 14,  4,  6, 
+   2,  4,  6,  2,  6, 10, 20,  6,  4,  2, 24,  4,  2, 10, 12,  2, 10,  8, 
+   6,  6,  6, 18,  6,  4,  2, 12, 10, 12,  8, 16, 14,  6,  4,  2,  4,  2, 
+  10, 12,  6,  6, 18,  2, 16,  2, 22,  6,  8,  6,  4,  2,  4,  8,  6, 10, 
+   2, 10, 14, 10,  6, 12,  2,  4,  2, 10, 12,  2, 16,  2,  6,  4,  2, 10, 
+   8, 18, 24,  4,  6,  8, 16,  2,  4,  8, 16,  2,  4,  8,  6,  6,  4, 12, 
+   2, 22,  6,  2,  6,  4,  6, 14,  6,  4,  2,  6,  4,  6, 12,  6,  6, 14, 
+   4,  6, 12,  8,  6,  4, 26, 18, 10,  8,  4,  6,  2,  6, 22, 12,  2, 16, 
+   8,  4, 12, 14, 10,  2,  4,  8,  6,  6,  4,  2,  4,  6,  8,  4,  2,  6, 
+  10,  2, 10,  8,  4, 14, 10, 12,  2,  6,  4,  2, 16, 14,  4,  6,  8,  6, 
+   4, 18,  8, 10,  6,  6,  8, 10, 12, 14,  4,  6,  6,  2, 28,  2, 10,  8, 
+   4, 14,  4,  8, 12,  6, 12,  4,  6, 20, 10,  2, 16, 26,  4,  2, 12,  6, 
+   4, 12,  6,  8,  4,  8, 22,  2,  4,  2, 12, 28,  2,  6,  6,  6,  4,  6, 
+   2, 12,  4, 12,  2, 10,  2, 16,  2, 16,  6, 20, 16,  8,  4,  2,  4,  2, 
+  22,  8, 12,  6, 10,  2,  4,  6,  2,  6, 10,  2, 12, 10,  2, 10, 14,  6, 
+   4,  6,  8,  6,  6, 16, 12,  2,  4, 14,  6,  4,  8, 10,  8,  6,  6, 22, 
+   6,  2, 10, 14,  4,  6, 18,  2, 10, 14,  4,  2, 10, 14,  4,  8, 18,  4, 
+   6,  2,  4,  6,  2, 12,  4, 20, 22, 12,  2,  4,  6,  6,  2,  6, 22,  2, 
+   6, 16,  6, 12,  2,  6, 12, 16,  2,  4,  6, 14,  4,  2, 18, 24, 10,  6, 
+   2, 10,  2, 10,  2, 10,  6,  2, 10,  2, 10,  6,  8, 30, 10,  2, 10,  8, 
+   6, 10, 18,  6, 12, 12,  2, 18,  6,  4,  6,  6, 18,  2, 10, 14,  6,  4, 
+   2,  4, 24,  2, 12,  6, 16,  8,  6,  6, 18, 16,  2,  4,  6,  2,  6,  6, 
+  10,  6, 12, 12, 18,  2,  6,  4, 18,  8, 24,  4,  2,  4,  6,  2, 12,  4, 
+  14, 30, 10,  6, 12, 14,  6, 10, 12,  2,  4,  6,  8,  6, 10,  2,  4, 14, 
+   6,  6,  4,  6,  2, 10,  2, 16, 12,  8, 18,  4,  6, 12,  2,  6,  6,  6, 
+  28,  6, 14,  4,  8, 10,  8, 12, 18,  4,  2,  4, 24, 12,  6,  2, 16,  6, 
+   6, 14, 10, 14,  4, 30,  6,  6,  6,  8,  6,  4,  2, 12,  6,  4,  2,  6, 
+  22,  6,  2,  4, 18,  2,  4, 12,  2,  6,  4, 26,  6,  6,  4,  8, 10, 32, 
+  16,  2,  6,  4,  2,  4,  2, 10, 14,  6,  4,  8, 10,  6, 20,  4,  2,  6, 
+  30,  4,  8, 10,  6,  6,  8,  6, 12,  4,  6,  2,  6,  4,  6,  2, 10,  2, 
+  16,  6, 20,  4, 12, 14, 28,  6, 20,  4, 18,  8,  6,  4,  6, 14,  6,  6, 
+  10,  2, 10, 12,  8, 10,  2, 10,  8, 12, 10, 24,  2,  4,  8,  6,  4,  8, 
+  18, 10,  6,  6,  2,  6, 10, 12,  2, 10,  6,  6,  6,  8,  6, 10,  6,  2, 
+   6,  6,  6, 10,  8, 24,  6, 22,  2, 18,  4,  8, 10, 30,  8, 18,  4,  2, 
+  10,  6,  2,  6,  4, 18,  8, 12, 18, 16,  6,  2, 12,  6, 10,  2, 10,  2, 
+   6, 10, 14,  4, 24,  2, 16,  2, 10,  2, 10, 20,  4,  2,  4,  8, 16,  6, 
+   6,  2, 12, 16,  8,  4,  6, 30,  2, 10,  2,  6,  4,  6,  6,  8,  6,  4, 
+  12,  6,  8, 12,  4, 14, 12, 10, 24,  6, 12,  6,  2, 22,  8, 18, 10,  6, 
+  14,  4,  2,  6, 10,  8,  6,  4,  6, 30, 14, 10,  2, 12, 10,  2, 16,  2, 
+  18, 24, 18,  6, 16, 18,  6,  2, 18,  4,  6,  2, 10,  8, 10,  6,  6,  8, 
+   4,  6,  2, 10,  2, 12,  4,  6,  6,  2, 12,  4, 14, 18,  4,  6, 20,  4, 
+   8,  6,  4,  8,  4, 14,  6,  4, 14, 12,  4,  2, 30,  4, 24,  6,  6, 12, 
+  12, 14,  6,  4,  2,  4, 18,  6, 12,  8,  6,  4, 12,  2, 12, 30, 16,  2, 
+   6, 22, 14,  6, 10, 12,  6,  2,  4,  8, 10,  6,  6, 24, 14,  6,  4,  8, 
+  12, 18, 10,  2, 10,  2,  4,  6, 20,  6,  4, 14,  4,  2,  4, 14,  6, 12, 
+  24, 10,  6,  8, 10,  2, 30,  4,  6,  2, 12,  4, 14,  6, 34, 12,  8,  6, 
+  10,  2,  4, 20, 10,  8, 16,  2, 10, 14,  4,  2, 12,  6, 16,  6,  8,  4, 
+   8,  4,  6,  8,  6,  6, 12,  6,  4,  6,  6,  8, 18,  4, 20,  4, 12,  2, 
+  10,  6,  2, 10, 12,  2,  4, 20,  6, 30,  6,  4,  8, 10, 12,  6,  2, 28, 
+   2,  6,  4,  2, 16, 12,  2,  6, 10,  8, 24, 12,  6, 18,  6,  4, 14,  6, 
+   4, 12,  8,  6, 12,  4,  6, 12,  6, 12,  2, 16, 20,  4,  2, 10, 18,  8, 
+   4, 14,  4,  2,  6, 22,  6, 14,  6,  6, 10,  6,  2, 10,  2,  4,  2, 22, 
+   2,  4,  6,  6, 12,  6, 14, 10, 12,  6,  8,  4, 36, 14, 12,  6,  4,  6, 
+   2, 12,  6, 12, 16,  2, 10,  8, 22,  2, 12,  6,  4,  6, 18,  2, 12,  6, 
+   4, 12,  8,  6, 12,  4,  6, 12,  6,  2, 12, 12,  4, 14,  6, 16,  6,  2, 
+  10,  8, 18,  6, 34,  2, 28,  2, 22,  6,  2, 10, 12,  2,  6,  4,  8, 22, 
+   6,  2, 10,  8,  4,  6,  8,  4, 12, 18, 12, 20,  4,  6,  6,  8,  4,  2, 
+  16, 12,  2, 10,  8, 10,  2,  4,  6, 14, 12, 22,  8, 28,  2,  4, 20,  4, 
+   2,  4, 14, 10, 12,  2, 12, 16,  2, 28,  8, 22,  8,  4,  6,  6, 14,  4, 
+   8, 12,  6,  6,  4, 20,  4, 18,  2, 12,  6,  4,  6, 14, 18, 10,  8, 10, 
+  32,  6, 10,  6,  6,  2,  6, 16,  6,  2, 12,  6, 28,  2, 10,  8, 16,  6, 
+   8,  6, 10, 24, 20, 10,  2, 10,  2, 12,  4,  6, 20,  4,  2, 12, 18, 10, 
+   2, 10,  2,  4, 20, 16, 26,  4,  8,  6,  4, 12,  6,  8, 12, 12,  6,  4, 
+   8, 22,  2, 16, 14, 10,  6, 12, 12, 14,  6,  4, 20,  4, 12,  6,  2,  6, 
+   6, 16,  8, 22,  2, 28,  8,  6,  4, 20,  4, 12, 24, 20,  4,  8, 10,  2, 
+  16,  2, 12, 12, 34,  2,  4,  6, 12,  6,  6,  8,  6,  4,  2,  6, 24,  4, 
+  20, 10,  6,  6, 14,  4,  6,  6,  2, 12,  6, 10,  2, 10,  6, 20,  4, 26, 
+   4,  2,  6, 22,  2, 24,  4,  6,  2,  4,  6, 24,  6,  8,  4,  2, 34,  6, 
+   8, 16, 12,  2, 10,  2, 10,  6,  8,  4,  8, 12, 22,  6, 14,  4, 26,  4, 
+   2, 12, 10,  8,  4,  8, 12,  4, 14,  6, 16,  6,  8,  4,  6,  6,  8,  6, 
+  10, 12,  2,  6,  6, 16,  8,  6,  6, 12, 10,  2,  6, 18,  4,  6,  6,  6, 
+  12, 18,  8,  6, 10,  8, 18,  4, 14,  6, 18, 10,  8, 10, 12,  2,  6, 12, 
+  12, 36,  4,  6,  8,  4,  6,  2,  4, 18, 12,  6,  8,  6,  6,  4, 18,  2, 
+   4,  2, 24,  4,  6,  6, 14, 30,  6,  4,  6, 12,  6, 20,  4,  8,  4,  8, 
+   6,  6,  4, 30,  2, 10, 12,  8, 10,  8, 24,  6, 12,  4, 14,  4,  6,  2, 
+  28, 14, 16,  2, 12,  6,  4, 20, 10,  6,  6,  6,  8, 10, 12, 14, 10, 14, 
+  16, 14, 10, 14,  6, 16,  6,  8,  6, 16, 20, 10,  2,  6,  4,  2,  4, 12, 
+   2, 10,  2,  6, 22,  6,  2,  4, 18,  8, 10,  8, 22,  2, 10, 18, 14,  4, 
+   2,  4, 18,  2,  4,  6,  8, 10,  2, 30,  4, 30,  2, 10,  2, 18,  4, 18, 
+   6, 14, 10,  2,  4, 20, 36,  6,  4,  6, 14,  4, 20, 10, 14, 22,  6,  2, 
+  30, 12, 10, 18,  2,  4, 14,  6, 22, 18,  2, 12,  6,  4,  8,  4,  8,  6, 
+  10,  2, 12, 18, 10, 14, 16, 14,  4,  6,  6,  2,  6,  4,  2, 28,  2, 28, 
+   6,  2,  4,  6, 14,  4, 12, 14, 16, 14,  4,  6,  8,  6,  4,  6,  6,  6, 
+   8,  4,  8,  4, 14, 16,  8,  6,  4, 12,  8, 16,  2, 10,  8,  4,  6, 26, 
+   6, 10,  8,  4,  6, 12, 14, 30,  4, 14, 22,  8, 12,  4,  6,  8, 10,  6, 
+  14, 10,  6,  2, 10, 12, 12, 14,  6,  6, 18, 10,  6,  8, 18,  4,  6,  2, 
+   6, 10,  2, 10,  8,  6,  6, 10,  2, 18, 10,  2, 12,  4,  6,  8, 10, 12, 
+  14, 12,  4,  8, 10,  6,  6, 20,  4, 14, 16, 14, 10,  8, 10, 12,  2, 18, 
+   6, 12, 10, 12,  2,  4,  2, 12,  6,  4,  8,  4, 44,  4,  2,  4,  2, 10, 
+  12,  6,  6, 14,  4,  6,  6,  6,  8,  6, 36, 18,  4,  6,  2, 12,  6,  6, 
+   6,  4, 14, 22, 12,  2, 18, 10,  6, 26, 24,  4,  2,  4,  2,  4, 14,  4, 
+   6,  6,  8, 16, 12,  2, 42,  4,  2,  4, 24,  6,  6,  2, 18,  4, 14,  6, 
+  28, 18, 14,  6, 10, 12,  2,  6, 12, 30,  6,  4,  6,  6, 14,  4,  2, 24, 
+   4,  6,  6, 26, 10, 18,  6,  8,  6,  6, 30,  4, 12, 12,  2, 16,  2,  6, 
+   4, 12, 18,  2,  6,  4, 26, 12,  6, 12,  4, 24, 24, 12,  6,  2, 12, 28, 
+   8,  4,  6, 12,  2, 18,  6,  4,  6,  6, 20, 16,  2,  6,  6, 18, 10,  6, 
+   2,  4,  8,  6,  6, 24, 16,  6,  8, 10,  6, 14, 22,  8, 16,  6,  2, 12, 
+   4,  2, 22,  8, 18, 34,  2,  6, 18,  4,  6,  6,  8, 10,  8, 18,  6,  4, 
+   2,  4,  8, 16,  2, 12, 12,  6, 18,  4,  6,  6,  6,  2,  6, 12, 10, 20, 
+  12, 18,  4,  6,  2, 16,  2, 10, 14,  4, 30,  2, 10, 12,  2, 24,  6, 16, 
+   8, 10,  2, 12, 22,  6,  2, 16, 20, 10,  2, 12, 12, 18, 10, 12,  6,  2, 
+  10,  2,  6, 10, 18,  2, 12,  6,  4,  6,  2, 24, 28,  2,  4,  2, 10,  2, 
+  16, 12,  8, 22,  2,  6,  4,  2, 10,  6, 20, 12, 10,  8, 12,  6,  6,  6, 
+   4, 18,  2,  4, 12, 18,  2, 12,  6,  4,  2, 16, 12, 12, 14,  4,  8, 18, 
+   4, 12, 14,  6,  6,  4,  8,  6,  4, 20, 12, 10, 14,  4,  2, 16,  2, 12, 
+  30,  4,  6, 24, 20, 24, 10,  8, 12, 10, 12,  6, 12, 12,  6,  8, 16, 14, 
+   6,  4,  6, 36, 20, 10, 30, 12,  2,  4,  2, 28, 12, 14,  6, 22,  8,  4, 
+  18,  6, 14, 18,  4,  6,  2,  6, 34, 18,  2, 16,  6, 18,  2, 24,  4,  2, 
+   6, 12,  6, 12, 10,  8,  6, 16, 12,  8, 10, 14, 40,  6,  2,  6,  4, 12, 
+  14,  4,  2,  4,  2,  4,  8,  6, 10,  6,  6,  2,  6,  6,  6, 12,  6, 24, 
+  10,  2, 10,  6, 12,  6,  6, 14,  6,  6, 52, 20,  6, 10,  2, 10,  8, 10, 
+  12, 12,  2,  6,  4, 14, 16,  8, 12,  6, 22,  2, 10,  8,  6, 22,  2, 22, 
+   6,  8, 10, 12, 12,  2, 10,  6, 12,  2,  4, 14, 10,  2,  6, 18,  4, 12, 
+   8, 18, 12,  6,  6,  4,  6,  6, 14,  4,  2, 12, 12,  4,  6, 18, 18, 12, 
+   2, 16, 12,  8, 18, 10, 26,  4,  6,  8,  6,  6,  4,  2, 10, 20,  4,  6, 
+   8,  4, 20, 10,  2, 34,  2,  4, 24,  2, 12, 12, 10,  6,  2, 12, 30,  6, 
+  12, 16, 12,  2, 22, 18, 12, 14, 10,  2, 12, 12,  4,  2,  4,  6, 12,  2, 
+  16, 18,  2, 40,  8, 16,  6,  8, 10,  2,  4, 18,  8, 10,  8, 12,  4, 18, 
+   2, 18, 10,  2,  4,  2,  4,  8, 28,  2,  6, 22, 12,  6, 14, 18,  4,  6, 
+   8,  6,  6, 10,  8,  4,  2, 18, 10,  6, 20, 22,  8,  6, 30,  4,  2,  4, 
+  18,  6, 30,  2,  4,  8,  6,  4,  6, 12, 14, 34, 14,  6,  4,  2,  6,  4, 
+  14,  4,  2,  6, 28,  2,  4,  6,  8, 10,  2, 10,  2, 10,  2,  4, 30,  2, 
+  12, 12, 10, 18, 12, 14, 10,  2, 12,  6, 10,  6, 14, 12,  4, 14,  4, 18, 
+   2, 10,  8,  4,  8, 10, 12, 18, 18,  8,  6, 18, 16, 14,  6,  6, 10, 14, 
+   4,  6,  2, 12, 12,  4,  6,  6, 12,  2, 16,  2, 12,  6,  4, 14,  6,  4, 
+   2, 12, 18,  4, 36, 18, 12, 12,  2,  4,  2,  4,  8, 12,  4, 36,  6, 18, 
+   2, 12, 10,  6, 12, 24,  8,  6,  6, 16, 12,  2, 18, 10, 20, 10,  2,  6, 
+  18,  4,  2, 40,  6,  2, 16,  2,  4,  8, 18, 10, 12,  6,  2, 10,  8,  4, 
+   6, 12,  2, 10, 18,  8,  6,  4, 20,  4,  6, 36,  6,  2, 10,  6, 24,  6, 
+  14, 16,  6, 18,  2, 10, 20, 10,  8,  6,  4,  6,  2, 10,  2, 12,  4,  2, 
+   4,  8, 10,  6, 12, 18, 14, 12, 16,  8,  6, 16,  8,  4,  2,  6, 18, 24, 
+  18, 10, 12,  2,  4, 14, 10,  6,  6,  6, 18, 12,  2, 28, 18, 14, 16, 12, 
+  14, 24, 12, 22,  6,  2, 10,  8,  4,  2,  4, 14, 12,  6,  4,  6, 14,  4, 
+   2,  4, 30,  6,  2,  6, 10,  2, 30, 22,  2,  4,  6,  8,  6,  6, 16, 12, 
+  12,  6,  8,  4,  2, 24, 12,  4,  6,  8,  6,  6, 10,  2,  6, 12, 28, 14, 
+   6,  4, 12,  8,  6, 12,  4,  6, 14,  6, 12, 10,  6,  6,  8,  6,  6,  4, 
+   2,  4,  8, 12,  4, 14, 18, 10,  2, 16,  6, 20,  6, 10,  8,  4, 30, 36, 
+  12,  8, 22, 12,  2,  6, 12, 16,  6,  6,  2, 18,  4, 26,  4,  8, 18, 10, 
+   8, 10,  6, 14,  4, 20, 22, 18, 12,  8, 28, 12,  6,  6,  8,  6, 12, 24, 
+  16, 14,  4, 14, 12,  6, 10, 12, 20,  6,  4,  8, 18, 12, 18, 10,  2,  4, 
+  20, 10, 14,  4,  6,  2, 10, 24, 18,  2,  4, 20, 16, 14, 10, 14,  6,  4, 
+   6, 20,  6, 10,  6,  2, 12,  6, 30, 10,  8,  6,  4,  6,  8, 40,  2,  4, 
+   2, 12, 18,  4,  6,  8, 10,  6, 18, 18,  2, 12, 16,  8,  6,  4,  6,  6, 
+   2, 52, 14,  4, 20, 16,  2,  4,  6, 12,  2,  6, 12, 12,  6,  4, 14, 10, 
+   6,  6, 14, 10, 14, 16,  8,  6, 12,  4,  8, 22,  6,  2, 18, 22,  6,  2, 
+  18,  6, 16, 14, 10,  6, 12,  2,  6,  4,  8, 18, 12, 16,  2,  4, 14,  4, 
+   8, 12, 12, 30, 16,  8,  4,  2,  6, 22, 12,  8, 10,  6,  6,  6, 14,  6, 
+  18, 10, 12,  2, 10,  2,  4, 26,  4, 12,  8,  4, 18,  8, 10, 14, 16,  6, 
+   6,  8, 10,  6,  8,  6, 12, 10, 20, 10,  8,  4, 12, 26, 18,  4, 12, 18, 
+   6, 30,  6,  8,  6, 22, 12,  2,  4,  6,  6,  2, 10,  2,  4,  6,  6,  2, 
+   6, 22, 18,  6, 18, 12,  8, 12,  6, 10, 12,  2, 16,  2, 10,  2, 10, 18, 
+   6, 20,  4,  2,  6, 22,  6,  6, 18,  6, 14, 12, 16,  2,  6,  6,  4, 14, 
+  12,  4,  2, 18, 16, 36, 12,  6, 14, 28,  2, 12,  6, 12,  6,  4,  2, 16, 
+  30,  8, 24,  6, 30, 10,  2, 18,  4,  6, 12,  8, 22,  2,  6, 22, 18,  2, 
+  10,  2, 10, 30,  2, 28,  6, 14, 16,  6, 20, 16,  2,  6,  4, 32,  4,  2, 
+   4,  6,  2, 12,  4,  6,  6, 12,  2,  6,  4,  6,  8,  6,  4, 20,  4, 32, 
+  10,  8, 16,  2, 22,  2,  4,  6,  8,  6, 16, 14,  4, 18,  8,  4, 20,  6, 
+  12, 12,  6, 10,  2, 10,  2, 12, 28, 12, 18,  2, 18, 10,  8, 10, 48,  2, 
+   4,  6,  8, 10,  2, 10, 30,  2, 36,  6, 10,  6,  2, 18,  4,  6,  8, 16, 
+  14, 16,  6, 14,  4, 20,  4,  6,  2, 10, 12,  2,  6, 12,  6,  6,  4, 12, 
+   2,  6,  4, 12,  6,  8,  4,  2,  6, 18, 10,  6,  8, 12,  6, 22,  2,  6, 
+  12, 18,  4, 14,  6,  4, 20,  6, 16,  8,  4,  8, 22,  8, 12,  6,  6, 16, 
+  12, 18, 30,  8,  4,  2,  4,  6, 26,  4, 14, 24, 22,  6,  2,  6, 10,  6, 
+  14,  6,  6, 12, 10,  6,  2, 12, 10, 12,  8, 18, 18, 10,  6,  8, 16,  6, 
+   6,  8, 16, 20,  4,  2, 10,  2, 10, 12,  6,  8,  6, 10, 20, 10, 18, 26, 
+   4,  6, 30,  2,  4,  8,  6, 12, 12, 18,  4,  8, 22,  6,  2, 12, 34,  6, 
+  18, 12,  6,  2, 28, 14, 16, 14,  4, 14, 12,  4,  6,  6,  2, 36,  4,  6, 
+  20, 12, 24,  6, 22,  2, 16, 18, 12, 12, 18,  2,  6,  6,  6,  4,  6, 14, 
+   4,  2, 22,  8, 12,  6, 10,  6,  8, 12, 18, 12,  6, 10,  2, 22, 14,  6, 
+   6,  4, 18,  6, 20, 22,  2, 12, 24,  4, 18, 18,  2, 22,  2,  4, 12,  8, 
+  12, 10, 14,  4,  2, 18, 16, 38,  6,  6,  6, 12, 10,  6, 12,  8,  6,  4, 
+   6, 14, 30,  6, 10,  8, 22,  6,  8, 12, 10,  2, 10,  2,  6, 10,  2, 10, 
+  12, 18, 20,  6,  4,  8, 22,  6,  6, 30,  6, 14,  6, 12, 12,  6, 10,  2, 
+  10, 30,  2, 16,  8,  4,  2,  6, 18,  4,  2,  6,  4, 26,  4,  8,  6, 10, 
+   2,  4,  6,  8,  4,  6, 30, 12,  2,  6,  6,  4, 20, 22,  8,  4,  2,  4, 
+  72,  8,  4,  8, 22,  2,  4, 14, 10,  2,  4, 20,  6, 10, 18,  6, 20, 16, 
+   6,  8,  6,  4, 20, 12, 22,  2,  4,  2, 12, 10, 18,  2, 22,  6, 18, 30, 
+   2, 10, 14, 10,  8, 16, 50,  6, 10,  8, 10, 12,  6, 18,  2, 22,  6,  2, 
+   4,  6,  8,  6,  6, 10, 18,  2, 22,  2, 16, 14, 10,  6,  2, 12, 10, 20, 
+   4, 14,  6,  4, 36,  2,  4,  6, 12,  2,  4, 14, 12,  6,  4,  6,  2,  6, 
+   4, 20, 10,  2, 10,  6, 12,  2, 24, 12, 12,  6,  6,  4, 24,  2,  4, 24, 
+   2,  6,  4,  6,  8, 16,  6,  2, 10, 12, 14,  6, 34,  6, 14,  6,  4,  2, 
+  30,  0
+  };
+  int64_t num, den, left, min, max;
+
+  if (!value)
+    return;
+  if ((value->num == 0) || (value->den == 0)) {
+    value->den = 1;
+    return;
+  }
+
+  if (value->den < 0)
+    value->num = -value->num, value->den = -value->den;
+  num = value->num;
+  den = value->den;
+  min = num < 0 ? -num : num;
+  if (min < den) {
+    max = den;
+  } else {
+    max = min;
+    min = den;
+  }
+  left = 1;
+
+  /* prime 2, simple and fast */
+  while (!((min | max) & 1)) {
+    min >>= 1;
+    max >>= 1;
+  }
+  while (!(min & 1)) {
+    min >>= 1;
+    left += left;
+  }
+
+  /* now, the remaining primes */
+  {
+    int prime = 0;
+    const unsigned char *p = primediffs;
+    while (*p) {
+      prime += *p++;
+      if (min < prime * prime)
+        break;
+      while (min % prime == 0) {
+        min /= prime;
+        if (max % prime != 0) {
+          left *= prime;
+          break;
+        }
+        max /= prime;
+      }
+      while (min % prime == 0) {
+        min /= prime;
+        left *= prime;
+      }
+    }
+  }
+  /* after stripping all prime factors up to sqrt (min), the rest _is_ prime */
+  if (max % min == 0) {
+    max /= min;
+    min = 1;
+  }
+  min *= left;
+  if (num < 0) {
+    if (-num < den) {
+      value->num = -min;
+      value->den = max;
+    } else {
+      value->num = -max;
+      value->den = min;
+    }
+  } else {
+    if (num < den) {
+      value->num = min;
+      value->den = max;
+    } else {
+      value->num = max;
+      value->den = min;
+    }
+  }
+}
+

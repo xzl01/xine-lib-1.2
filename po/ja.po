@@ -7,14 +7,14 @@ msgid ""
 msgstr ""
 "Project-Id-Version: xine-lib 1.1.19\n"
 "Report-Msgid-Bugs-To: xine-devel@lists.sourceforge.net\n"
-"POT-Creation-Date: 2022-03-09 15:19+0200\n"
+"POT-Creation-Date: 2023-07-06 13:04+0200\n"
 "PO-Revision-Date: 2010-07-31 01:14+0700\n"
 "Last-Translator: Takeshi Hamasaki <hmatrjp@users.sourceforge.jp>\n"
 "Language-Team: LANGUAGE <LL@li.org>\n"
-"Language: ja\n"
 "MIME-Version: 1.0\n"
 "Content-Type: text/plain; charset=UTF-8\n"
 "Content-Transfer-Encoding: 8bit\n"
+"Language: \n"
 "Plural-Forms: nplurals=2; plural=(n != 1);\n"
 
 #: lib/hstrerror.c
@@ -203,8 +203,8 @@ msgid ""
 "audio_alsa_out: broken configuration for this PCM: no configurations "
 "available: %s\n"
 msgstr ""
-"audio_alsa_out: このPCMのための設定が壊れています: 有効な設定がありません: "
-"%s\n"
+"audio_alsa_out: このPCMのための設定が壊れています: 有効な設定がありません: %"
+"s\n"
 
 #: src/audio_out/audio_alsa_out.c
 msgid "notify changes to the hardware mixer"
@@ -670,7 +670,7 @@ msgstr "OSS 音声デバイス名"
 msgid ""
 "Specifies the base part of the audio device name, to which the OSS device "
 "number is appended to get the full device name.\n"
-"Select \"auto\" if you want xine to auto detect the corret setting."
+"Select \"auto\" if you want xine to auto detect the correct setting."
 msgstr ""
 
 #: src/audio_out/audio_oss_out.c
@@ -1080,6 +1080,7 @@ msgid "If the machine freezes on mpeg2 decoding use mpeg2 software decoding."
 msgstr ""
 
 #: src/combined/ffmpeg/ff_video_decoder.c
+#: src/video_out/vaapi/xine_hw_frame_vaapi.c
 msgid "Enable VAAPI"
 msgstr ""
 
@@ -1793,7 +1794,7 @@ msgstr ""
 #: src/dxr3/video_out_dxr3.c
 msgid ""
 "Adds black bars when the image has an aspect ratio the card cannot handle "
-"natively. This is needed to maintain proper image proportions."
+"natively."
 msgstr ""
 
 #: src/dxr3/video_out_dxr3.c
@@ -3125,7 +3126,7 @@ msgid "VCD read-ahead caching?"
 msgstr ""
 
 #: src/input/vcd/xineplug_inp_vcd.c
-msgid "Class may lead to jerky playback on low-end machines."
+msgid "May lead to jerky playback on low-end machines."
 msgstr ""
 
 #: src/input/vcd/xineplug_inp_vcd.c
@@ -3764,6 +3765,17 @@ msgstr ""
 msgid "DVB subtitle decoder plugin"
 msgstr ""
 
+#: src/spu_dec/spudvb_decoder.c src/spu_dec/sputext_demuxer.c
+msgid "default duration of subtitle display in seconds"
+msgstr ""
+
+#: src/spu_dec/spudvb_decoder.c src/spu_dec/sputext_demuxer.c
+msgid ""
+"Some subtitle formats do not explicitly give a duration for each subtitle. "
+"For these, you can set a default duration here. Setting to zero will result "
+"in the subtitle being shown until the next one takes over."
+msgstr ""
+
 #: src/spu_dec/sputext_decoder.c
 msgid "external subtitle decoder plugin"
 msgstr ""
@@ -3831,17 +3843,6 @@ msgstr ""
 
 #: src/spu_dec/sputext_demuxer.c
 msgid "sputext demuxer plugin"
-msgstr ""
-
-#: src/spu_dec/sputext_demuxer.c
-msgid "default duration of subtitle display in seconds"
-msgstr ""
-
-#: src/spu_dec/sputext_demuxer.c
-msgid ""
-"Some subtitle formats do not explicitly give a duration for each subtitle. "
-"For these, you can set a default duration here. Setting to zero will result "
-"in the subtitle being shown until the next one takes over."
 msgstr ""
 
 #: src/spu_dec/xine_cc_decoder.c
@@ -4072,27 +4073,41 @@ msgstr ""
 msgid "HEVC video decoder plugin"
 msgstr ""
 
+#: src/video_dec/libvdpau/alterh264_decode.c
+msgid "vdpau: reopen decoder on seek"
+msgstr ""
+
+#: src/video_dec/libvdpau/alterh264_decode.c
+msgid "Some drivers crash without this."
+msgstr ""
+
+#: src/video_dec/libvdpau/alterh264_decode.c
+msgid ""
+"Alternative H264 decoder plugin using VDPAU hardware decoding.\n"
+"Must be used along with video_out_vdpau."
+msgstr ""
+
 #: src/video_dec/libvdpau/vdpau_h264.c
 msgid ""
-"vdpau_h264: h264 decoder plugin using VDPAU hardware decoding.\n"
+"H264 decoder plugin using VDPAU hardware decoding.\n"
 "Must be used along with video_out_vdpau."
 msgstr ""
 
 #: src/video_dec/libvdpau/vdpau_mpeg12.c
 msgid ""
-"vdpau_mpeg12: mpeg1/2 decoder plugin using VDPAU hardware decoding.\n"
+"MPEG1/2 decoder plugin using VDPAU hardware decoding.\n"
 "Must be used along with video_out_vdpau."
 msgstr ""
 
 #: src/video_dec/libvdpau/vdpau_mpeg4.c
 msgid ""
-"vdpau_mpeg4: mpeg4 part 2 decoder plugin using VDPAU hardware decoding.\n"
+"MPEG4 part 2 decoder plugin using VDPAU hardware decoding.\n"
 "Must be used along with video_out_vdpau."
 msgstr ""
 
 #: src/video_dec/libvdpau/vdpau_vc1.c
 msgid ""
-"vdpau_vc1: vc1 decoder plugin using VDPAU hardware decoding.\n"
+"VC-1/WMV3 decoder plugin using VDPAU hardware decoding.\n"
 "Must be used along with video_out_vdpau."
 msgstr ""
 
@@ -4163,6 +4178,21 @@ msgstr ""
 
 #: src/video_out/opengl/xine_glx.c
 msgid "GL provider (GLX)"
+msgstr ""
+
+#: src/video_out/vaapi/xine_hw_frame_vaapi.c
+msgid ""
+"Enable VAAPI video decoding with any video output driver. When disabled, "
+"only vaapi video output driver uses VAAPI accelerated decoding. Currently "
+"only opengl2 video output driver supports this."
+msgstr ""
+
+#: src/video_out/vaapi/xine_hw_frame_vaapi.c src/video_out/video_out_vaapi.c
+msgid "vaapi: set vaapi_guarded_render to 0 ( no ) 1 ( yes )"
+msgstr ""
+
+#: src/video_out/vaapi/xine_hw_frame_vaapi.c
+msgid "VAAPI frame provider"
 msgstr ""
 
 #: src/video_out/video_out_aa.c
@@ -4398,6 +4428,22 @@ msgstr ""
 msgid ""
 "Set to true if you want bicubic scaling.\n"
 "\n"
+msgstr ""
+
+#: src/video_out/video_out_opengl2.c
+msgid "opengl2: video scale mode"
+msgstr ""
+
+#: src/video_out/video_out_opengl2.c
+msgid ""
+"0: Simple. Very fast, very sharp,\n"
+"   but also stairsteps, uneven lines, and flickering movement.\n"
+"\n"
+"1: Linear blending. Fast, very smooth, but also a bit blurry.\n"
+"\n"
+"2: Catmullrom blending. Very smooth, sharp, but needs fast hardware.\n"
+"\n"
+"3: Cosinus blending. Smooth, very sharp, but needs fast hardware.\n"
 msgstr ""
 
 #: src/video_out/video_out_opengl2.c
@@ -4642,10 +4688,6 @@ msgid "vaapi: set deinterlace to 0 ( none ), 1 ( top field ), 2 ( bob )."
 msgstr ""
 
 #: src/video_out/video_out_vaapi.c
-msgid "vaapi: set vaapi_guarded_render to 0 ( no ) 1 ( yes )"
-msgstr ""
-
-#: src/video_out/video_out_vaapi.c
 msgid ""
 "vaapi: set scaling level to : default (default) fast (fast) hq (HQ) nla "
 "(anamorphic)"
@@ -4678,6 +4720,18 @@ msgid ""
 "simple+3:    Like above, but adjust saturation as well.\n"
 "\n"
 "Hint: play \"test://rgb_levels.bmp\" while trying this.\n"
+msgstr ""
+
+#: src/video_out/video_out_vaapi.c
+msgid "VAAPI overlay mode"
+msgstr ""
+
+#: src/video_out/video_out_vaapi.c
+msgid ""
+"How to display onscreen messages and subtitles:\n"
+"0: Disable overlays for broken driver (eg Mesa radeonsi),\n"
+"1: Auto.\n"
+"2: Force BGRA.\n"
 msgstr ""
 
 #: src/video_out/video_out_vaapi.c
@@ -4784,13 +4838,25 @@ msgid ""
 msgstr ""
 
 #: src/video_out/video_out_vdpau.c
-msgid "vdpau: make snapshots like visible on screen"
+msgid "vdpau: take snapshots as shown on the screen"
 msgstr ""
 
 #: src/video_out/video_out_vdpau.c
 msgid ""
 "If set, snapshots will be scaled, cropped, padded and subtitled.\n"
 "Otherwise, you get the pure original video image.\n"
+msgstr ""
+
+#: src/video_out/video_out_vdpau.c
+msgid "vdpau: work around broken video mixer overlays"
+msgstr ""
+
+#: src/video_out/video_out_vdpau.c
+msgid ""
+"Some 2022 vdpau_radeonsi system driver crashes when showing\n"
+"subtitles or onscreen messages the regular way.\n"
+"The \"On\" setting is slightly slower but helps there.\n"
+"The \"Off\" setting avoids flicker on some other drivers.\n"
 msgstr ""
 
 #: src/video_out/video_out_vdpau.c
@@ -5615,13 +5681,6 @@ msgid "priority for %s decoder"
 msgstr ""
 
 #: src/xine-engine/load_plugins.c
-msgid ""
-"The priority provides a ranking in case some media can be handled by more "
-"than one decoder.\n"
-"A priority of 0 enables the decoder's default priority."
-msgstr ""
-
-#: src/xine-engine/load_plugins.c
 #, c-format
 msgid ""
 "load_plugins: demuxer plugin %s does not provide a priority, xine-lib will "
@@ -5694,6 +5753,13 @@ msgstr ""
 #: src/xine-engine/load_plugins.c
 #, c-format
 msgid "failed to remove new catalogue cache: %s\n"
+msgstr ""
+
+#: src/xine-engine/load_plugins.c
+msgid ""
+"The priority provides a ranking in case some media can be handled by more "
+"than one decoder.\n"
+"A priority of 0 enables the decoder's default priority."
 msgstr ""
 
 #: src/xine-engine/load_plugins.c
@@ -5903,18 +5969,10 @@ msgstr ""
 
 #: src/xine-engine/video_out.c
 msgid ""
-"video out causes a decoder flush when video out runs out of frames for "
-"displaying,\n"
-"because the decoder hasn't deliverd new frames for quite a while.\n"
-"flushing the decoder causes decoding errors for images decoded after the "
-"flush.\n"
-"to avoid the decoding errors, decoder flush at video out should be "
-"disabled.\n"
-"\n"
-"WARNING: as the flush was introduced to fix some issues when playing DVD "
-"still images, it is\n"
-"likely that these issues may reappear in case they haven't been fixed "
-"differently meanwhile.\n"
+"Video decoder is flushed when it hasn't delivered new frames for quite a "
+"while.\n"
+"Turning this off fixes some temporary image distortion.\n"
+"But it may also add some issues with DVD still images.\n"
 msgstr ""
 
 #: src/xine-engine/video_out.c
@@ -5925,6 +5983,17 @@ msgstr ""
 #: src/xine-engine/video_out.c
 #, c-format
 msgid "video_out: early wakeups: %d of %d\n"
+msgstr ""
+
+#: src/xine-engine/video_out.c
+msgid "Limit output frame rate"
+msgstr ""
+
+#: src/xine-engine/video_out.c
+msgid ""
+"If not 0, limit output frame rate to this value, without extra jitter.\n"
+"Try 40 to save power, and/or to deal with a slow driver.\n"
+"Otherwise, current screen refresh rate plus 5 may be a good idea ;-)\n"
 msgstr ""
 
 #: src/xine-engine/video_out.c
@@ -6009,17 +6078,9 @@ msgstr ""
 
 #: src/xine-engine/xine.c
 msgid ""
-"when watching live tv a discontinuity happens for example about every 26.5 "
-"hours due to a pts wrap.\n"
-"flushing the decoder at that time causes decoding errors for images after "
-"the pts wrap.\n"
-"to avoid the decoding errors, decoder flush at discontinuity should be "
-"disabled.\n"
-"\n"
-"WARNING: as the flush was introduced to fix some issues when playing DVD "
-"still images, it is\n"
-"likely that these issues may reappear in case they haven't been fixed "
-"differently meanwhile.\n"
+"Video decoder is flushed at timeline jumps.\n"
+"Turning this off fixes occasional image distortion with DVB (TV).\n"
+"But it may also add some issues with DVD still images.\n"
 msgstr ""
 
 #: src/xine-engine/xine.c
@@ -6236,6 +6297,19 @@ msgid ""
 "When opening an audio only file \"foo_a.ext\", assume that \"foo_v.ext\" "
 "contains the missing video track for it, and vice versa.\n"
 "This mainly serves as a test for engine side streams."
+msgstr ""
+
+#: src/xine-engine/xine.c
+msgid "Use pre-1.2.13 libxine audio level settings"
+msgstr ""
+
+#: src/xine-engine/xine.c
+#, no-c-format
+msgid ""
+"On:  0..200 means 0..200% of audio amplification and equalizer amplitudes.\n"
+"     Some applications rely on this, and use their own level mapping.\n"
+"Off: 100 still means 100% or 0 dB. A step of 1 then means plus or minus\n"
+"     1 dB for amplification, and 0.5 dB for equalizer.\n"
 msgstr ""
 
 #: src/xine-engine/xine.c

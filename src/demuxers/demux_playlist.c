@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2007-2020 the xine project
+ * Copyright (C) 2007-2022 the xine project
  *
  * This file is part of xine, a free video player.
  *
@@ -102,7 +102,7 @@ static playlist_t detect_by_extension (input_plugin_t *input) {
 }
 
 static playlist_t detect_by_content (input_plugin_t *input) {
-  char buf[256], *tmp;
+  char buf[MAX_PREVIEW_SIZE], *tmp;
   int  len;
 
   len = _x_demux_read_header (input, buf, sizeof(buf)-1);

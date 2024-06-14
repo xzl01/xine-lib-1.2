@@ -1,5 +1,3 @@
-#
-## Generic Files to install for ALL architectures
 debian/tmp/usr/bin/xine-list-*
 debian/tmp/usr/lib/*/libxine.so.*
 debian/tmp/usr/share/locale/*

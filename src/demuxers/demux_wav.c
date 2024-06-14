@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2001-2018 the xine project
+ * Copyright (C) 2001-2023 the xine project
  *
  * This file is part of xine, a free video player.
  *
@@ -64,6 +64,8 @@ typedef struct {
 
   off_t                data_start;
   off_t                data_size;
+  int                  seek_align;
+  int                  chunk_size;
 
   int                  send_newpts;
   int                  seek_flag;  /* this is set when a seek just occurred */
@@ -154,19 +156,22 @@ static int open_wav_file(demux_wav_t *this) {
 
   /* search for the 'data' chunk */
   this->data_start = this->data_size = 0;
-  if (find_chunk_by_tag(this, data_TAG, NULL, &this->data_start)==0)
-  {
+  if (find_chunk_by_tag (this, data_TAG, NULL, &this->data_start) == 0)
     return 0;
-  }
-  else
-  {
-    /* Get the data length from the file itself, instead of the data
-     * TAG, for broken files */
-    if (this->input->seek(this->input, this->data_start, SEEK_SET) != this->data_start)
-      return 0;
-    this->data_size = this->input->get_length(this->input);
-    return 1;
-  }
+
+  /* Get the data length from the file itself, instead of the data TAG, for broken files */
+  if (this->input->seek (this->input, this->data_start, SEEK_SET) != this->data_start)
+    return 0;
+
+  /* XXX */
+  if (this->wave->nBlockAlign <= 0)
+    this->wave->nBlockAlign = 4;
+  this->seek_align = this->wave->nBlockAlign;
+  this->chunk_size = (this->wave->nBlockAlign < PREFERED_BLOCK_SIZE)
+                   ? PREFERED_BLOCK_SIZE / this->wave->nBlockAlign * this->wave->nBlockAlign
+                   : this->wave->nBlockAlign;
+  this->data_size = this->input->get_length (this->input);
+  return 1;
 }
 
 static int demux_wav_send_chunk(demux_plugin_t *this_gen) {
@@ -179,14 +184,9 @@ static int demux_wav_send_chunk(demux_plugin_t *this_gen) {
 
   /* just load data chunks from wherever the stream happens to be
    * pointing; issue a DEMUX_FINISHED status if EOF is reached */
-  if (this->wave->nBlockAlign < PREFERED_BLOCK_SIZE) {
-    remaining_sample_bytes = PREFERED_BLOCK_SIZE / this->wave->nBlockAlign *
-                             this->wave->nBlockAlign;
-  } else{
-    remaining_sample_bytes = this->wave->nBlockAlign;
-  }
-  current_file_pos =
-    this->input->get_current_pos(this->input) - this->data_start;
+  remaining_sample_bytes = this->chunk_size;
+
+  current_file_pos = this->input->get_current_pos(this->input) - this->data_start;
 
   current_pts = current_file_pos;
   current_pts *= 90000;
@@ -204,9 +204,19 @@ static int demux_wav_send_chunk(demux_plugin_t *this_gen) {
     }
 
     buf = this->audio_fifo->buffer_pool_alloc (this->audio_fifo);
-    if( this->data_size )
-      buf->extra_info->input_normpos = (int)( (double) current_file_pos * 65535 / this->data_size);
+    do {
+      if (this->data_size <= 0)
+        break;
+      /* file being written right now? */
+      if (current_file_pos > this->data_size) {
+        this->data_size = this->input->get_length (this->input);
+        if (this->data_size <= 0)
+          break;
+      }
+      buf->extra_info->input_normpos = (int)((double)current_file_pos * 65535 / this->data_size);
+    } while (0);
     buf->extra_info->input_time = current_pts / 90;
+    buf->extra_info->total_time = (int64_t) this->data_size * 1000 / this->wave->nAvgBytesPerSec;
     buf->pts = current_pts;
 
     if ((int)remaining_sample_bytes > buf->max_size)
@@ -291,20 +301,20 @@ static int demux_wav_seek (demux_plugin_t *this_gen,
                            off_t start_pos, int start_time, int playing) {
 
   demux_wav_t *this = (demux_wav_t *) this_gen;
-  start_pos = (off_t) ( (double) start_pos / 65535 *
-              this->data_size );
+  start_pos = this->data_size > 0 ? (off_t)((double)start_pos * this->data_size / 65535) : 0;
 
   this->status = DEMUX_OK;
 
-  this->send_newpts = 1;
-  if (playing) {
-    this->seek_flag = 1;
-    _x_demux_flush_engine (this->stream);
-  }
   /* if input is non-seekable, do not proceed with the rest of this
    * seek function */
-  if (!INPUT_IS_SEEKABLE(this->input))
+  if (!(this->input->get_capabilities (this->input) & (INPUT_CAP_SEEKABLE | INPUT_CAP_SLOW_SEEKABLE)))
     return this->status;
+
+  this->send_newpts = 1;
+  if (playing) {
+    this->seek_flag = BUF_FLAG_SEEK;
+    _x_demux_flush_engine (this->stream);
+  }
 
   /* time-based seeking, the start_pos code will then align the blocks
    * if necessary */
@@ -327,8 +337,8 @@ static int demux_wav_seek (demux_plugin_t *this_gen,
      * the block alignment integer-wise, and multiply the quotient by the
      * block alignment to get the new aligned offset. Add the data start
      * offset and seek to the new position. */
-    start_pos /= this->wave->nBlockAlign;
-    start_pos *= this->wave->nBlockAlign;
+    start_pos /= this->seek_align;
+    start_pos *= this->seek_align;
     start_pos += this->data_start;
 
     this->input->seek(this->input, start_pos, SEEK_SET);
@@ -374,7 +384,6 @@ static demux_plugin_t *open_plugin (demux_class_t *class_gen, xine_stream_t *str
                                     input_plugin_t *input) {
 
   demux_wav_t    *this;
-  uint32_t	align;
 
   switch (stream->content_detection_method) {
     case METHOD_BY_MRL:
@@ -411,15 +420,6 @@ static demux_plugin_t *open_plugin (demux_class_t *class_gen, xine_stream_t *str
     return NULL;
   }
 
-  /* special block alignment hack so that the demuxer doesn't send
-   * packets with individual PCM samples */
-  if ((this->wave->nAvgBytesPerSec / this->wave->nBlockAlign) ==
-      this->wave->nSamplesPerSec) {
-    align = PCM_BLOCK_ALIGN / this->wave->nBlockAlign;
-    align = align * this->wave->nBlockAlign;
-    this->wave->nBlockAlign = align;
-  }
-
   return &this->demux_plugin;
 }
 
@@ -443,3 +443,4 @@ void *demux_wav_init_plugin (xine_t *xine, const void *data) {
 
   return (void *)&demux_wav_class;
 }
+

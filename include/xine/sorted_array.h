@@ -58,13 +58,15 @@
 #include <xine/attributes.h>
 
 /* version */
-#define XINE_SARRAY 2
+#define XINE_SARRAY 3
 
 /* Array type */
 typedef struct xine_sarray_s xine_sarray_t;
 
 /* Array element comparator */
-typedef int (*xine_sarray_comparator_t)(void*, void*);
+typedef int (*xine_sarray_comparator_t) (void *item1, void *item2);
+/* Array element hash value */
+typedef unsigned int (*xine_sarray_hash_func_t) (void *item);
 
 /* Constructor */
 xine_sarray_t *xine_sarray_new(size_t initial_size, xine_sarray_comparator_t comparator) XINE_MALLOC XINE_PROTECTED;
@@ -72,13 +74,18 @@ xine_sarray_t *xine_sarray_new(size_t initial_size, xine_sarray_comparator_t com
 /* Destructor */
 void xine_sarray_delete(xine_sarray_t *sarray) XINE_PROTECTED;
 
+/* XINE_SARRAY >= 3: add optional hash function that returns 0 ... (hash_size - 1).
+ * Items will be sorted by ascending hash value first, then by comparator within the same hash value.
+ * NOTE: hash_size is currently limited to 4096. */
+void xine_sarray_set_hash (xine_sarray_t *sarray, xine_sarray_hash_func_t hash_func, unsigned int hash_size) XINE_PROTECTED;
+
 /* Set mode */
 /* For both add() and binary_search(): if there are multiple matching indices,
  * select 1 of them randomly. That is, the order of matches does not matter, just be fast. */
 #define XINE_SARRAY_MODE_DEFAULT 0x00000000
-/* select the first match. */
+/* if present, select the first match, or add brfore that. */
 #define XINE_SARRAY_MODE_FIRST   0x80000000
-/* select the last match (+ 1 if found). */
+/* if present, select the last match, or add after that. */
 #define XINE_SARRAY_MODE_LAST    0x40000000
 /* For add(): if there is a match already, dont add another copy,
  * and return ~(found_index) instead. */
@@ -95,8 +102,9 @@ void xine_sarray_clear(xine_sarray_t *sarray) XINE_PROTECTED;
    Returns the insertion position */
 int xine_sarray_add(xine_sarray_t *sarray, void *value) XINE_PROTECTED;
 
-/* Removes one element from an array at the position specified */
-void xine_sarray_remove(xine_sarray_t *sarray, unsigned int position) XINE_PROTECTED;
+/* Removes one element from an array at the position specified.
+ * XINE_SARRAY >= 4: return the removed data ptr. */
+void *xine_sarray_remove (xine_sarray_t *sarray, unsigned int position) XINE_PROTECTED;
 
 /* Removes one element from an array by user pointer.
  * Return the index it was found at, or ~0. */

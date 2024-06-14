@@ -455,6 +455,7 @@ int tvtime_build_copied_field( tvtime_t *tvtime, uint8_t *output,
         scanline += 2;
     }
 
+    (void)scanline;
     return 1;
 }
 

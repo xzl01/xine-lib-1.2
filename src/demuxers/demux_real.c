@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2000-2018 the xine project
+ * Copyright (C) 2000-2023 the xine project
  *
  * This file is part of xine, a free video player.
  *
@@ -1033,6 +1033,7 @@ static void real_parse_headers (demux_real_t *this) {
     buf->decoder_flags = BUF_FLAG_HEADER | BUF_FLAG_FRAME_END;
     buf->extra_info->input_normpos = 0;
     buf->extra_info->input_time    = 0;
+    buf->extra_info->total_time    = this->duration;
     buf->type = this->video_stream->buf_type;
     this->video_fifo->put (this->video_fifo, buf);
 
@@ -1618,9 +1619,11 @@ static int demux_real_send_chunk(demux_plugin_t *this_gen) {
         }
 
         /* if the video stream has b-frames fix the timestamps */
-        if((this->video_stream->format >= 0x20200002) &&
-           (buf->decoder_flags & BUF_FLAG_FRAME_START))
-          pts = (int64_t)real_get_reordered_pts (this, buf->content, timestamp) * 90;
+        if ((this->video_stream->format >= 0x20200002) &&
+           (buf->decoder_flags & BUF_FLAG_FRAME_START)) {
+          input_time = real_get_reordered_pts (this, buf->content, timestamp);
+          pts = (int64_t)input_time * 90;
+        }
 
         /* this test was moved from ffmpeg video decoder.
          * fixme: is pts only valid on frame start? */
@@ -1684,9 +1687,10 @@ static int demux_real_send_chunk(demux_plugin_t *this_gen) {
       this->audio_stream->audio_time = timestamp;
     else
       timestamp = this->audio_stream->audio_time;
-    /* nasty kludge, maybe this is somewhere in mdpr? */
+    /* nasty kludge was here due to a ff_audio_dec bug.
     if (this->audio_stream->buf_type == BUF_AUDIO_COOK)
       timestamp += 120;
+    */
     pts = (int64_t) timestamp * 90;
 
     /* if we have a seekable stream then use the timestamp for the data
@@ -2250,3 +2254,4 @@ void *demux_real_init_class (xine_t *xine, const void *data) {
 
   return (void *)&demux_real_class;
 }
+

@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2008-2020 the xine project
+ * Copyright (C) 2008-2023 the xine project
  * Copyright (C) 2008-2009 Julian Scheel
  *
  * kate: space-indent on; indent-width 2; mixedindent off; indent-mode cstyle; remove-trailing-space on;
@@ -4426,7 +4426,7 @@ void *h264_init_plugin (xine_t *xine, const void *data) {
     .open_plugin     = open_plugin,
     .identifier      = "vdpau_h264",
     .description     =
-        N_("vdpau_h264: h264 decoder plugin using VDPAU hardware decoding.\n"
+        N_("H264 decoder plugin using VDPAU hardware decoding.\n"
            "Must be used along with video_out_vdpau."),
     .dispose         = NULL,
   };

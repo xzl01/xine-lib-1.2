@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2016-2018 the xine project
+ * Copyright (C) 2016-2023 the xine project
  *
  * This file is part of xine, a free video player.
  *
@@ -328,7 +328,7 @@ static void tdaan_draw_text (vo_frame_t *frame, int x, int y, const char *s) {
   };
   const uint8_t *z = (const uint8_t *)s;
   uint32_t down = frame->pitches[0];
-  uint32_t *p = (uint32_t *)(frame->base[0] + down * y + ((x >> 1) << 2));
+  uint32_t *p = (uint32_t *)ASSUME_ALIGNED_2 (frame->base[0] + down * y + ((x >> 1) << 2), 4);
   down /= 4;
   while (*z) {
     int n = map[*z++];
@@ -388,73 +388,57 @@ static void tdaan_draw_line (vo_frame_t *frame, int x1, int y1, int x2, int y2, 
   }
   /* tilted */
   {
-    uint8_t *q = frame->base[0];
-    long int stepy = frame->pitches[0];
+    int32_t test[2], n;
+    ssize_t bump[2];
     /* always render downward */
     if (h < 0) {
-      q += stepy * y2 + x2 * 2;
+      x1 = x2;
+      y1 = y2;
       w = -w;
       h = -h;
-    } else {
-      q += stepy * y1 + x1 * 2;
     }
-    /* right to left */
     if (w < 0) {
+      /* right to left */
       w = -w;
       if (w >= h) {
         /* flat */
-        int d = w, n = w;
-        while (n) {
-          *q = gray;
-          d -= h;
-          if (d <= 0) {
-            d += w;
-            q += stepy;
-          }
-          q -= 2;
-          n--;
-        }
+        test[0] = -h;
+        test[1] = w - h;
+        bump[0] = -2;
+        n = w;
       } else {
         /* steep */
-        int d = h, n = h;
-        while (n) {
-          *q = gray;
-          d -= w;
-          if (d <= 0) {
-            d += h;
-            q -= 2;
-          }
-          q += stepy;
-          n--;
-        }
+        test[0] = -w;
+        test[1] = h - w;
+        bump[0] = frame->pitches[0];
+        n = h;
       }
-      return;
-    }
-    /* left to right */
-    if (w >= h) {
-      /* flat */
-      int d = w, n = w;
-      while (n) {
-        *q = gray;
-        d -= h;
-        if (d <= 0) {
-          d += w;
-          q += stepy;
-        }
-        q += 2;
-        n--;
-      }
+      bump[1] = frame->pitches[0] - 2;
     } else {
-      /* steep */
-      int d = h, n = h;
+      /* left to right */
+      if (w >= h) {
+        /* flat */
+        test[0] = -h;
+        test[1] = w - h;
+        bump[0] = 2;
+        n = w;
+      } else {
+        /* steep */
+        test[0] = -w;
+        test[1] = h - w;
+        bump[0] = frame->pitches[0];
+        n = h;
+      }
+      bump[1] = frame->pitches[0] + 2;
+    }
+    {
+      uint8_t *q = frame->base[0] + frame->pitches[0] * y1 + 2 * x1;
+      int32_t d = test[1];
       while (n) {
+        uint32_t i = (uint32_t)d >> 31;
         *q = gray;
-        d -= w;
-        if (d <= 0) {
-          d += h;
-          q += 2;
-        }
-        q += stepy;
+        d += test[i];
+        q += bump[i];
         n--;
       }
     }
@@ -472,7 +456,7 @@ static void tdaan_draw_rect (vo_frame_t *frame, int x, int y, int width, int hei
   x &= ~1;
   width += 1;
   width &= ~1;
-  q = (uint32_t *)(frame->base[0] + y * frame->pitches[0] + x * 2);
+  q = (uint32_t *)ASSUME_ALIGNED_2 (frame->base[0] + y * frame->pitches[0] + x * 2, 4);
 
   {
     size_t rest = (frame->pitches[0] - width * 2) / 4;
@@ -846,7 +830,7 @@ static void tdaan_port_put_buffer (
   if (pts) {
     int offs = (this->ring_put - this->ring_get) & RING_MASK;
     offs    -= this->samples_per_frame >> 1;
-    pts     -= 90000 * offs / (int)port->rate;
+    pts     -= INT64_C(90000) * offs / (int)port->rate;
   }
   /* buffer incoming audio */
   do {
@@ -1065,6 +1049,5 @@ void *tdaan_init_plugin (xine_t *xine, const void *data) {
 
   return (void *)&post_tdaan_class;
 }
-
 
 

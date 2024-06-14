@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2000-2021 the xine project
+ * Copyright (C) 2000-2023 the xine project
  *
  * This file is part of xine, a free video player.
  *
@@ -50,6 +50,7 @@ static void *audio_decoder_loop (void *stream_gen) {
   xine_ticket_t   *running_ticket = xine->port_ticket;
   buf_element_t   *headers_first = NULL, **headers_add = &headers_first, *headers_replay = NULL;
   int              running = 1;
+  int              seek_count;
   int              prof_audio_decode = -1;
   uint32_t         buftype_unknown = 0;
   int              audio_channel_user = stream->audio_channel_user;
@@ -76,6 +77,11 @@ static void *audio_decoder_loop (void *stream_gen) {
 
   audio_track_map[0] = AUDIO_TRACK_MAP_END;
 
+  memset (stream->audio_decoder_extra_info, 0, sizeof (*stream->audio_decoder_extra_info));
+  pthread_mutex_lock (&stream->first_frame.lock);
+  stream->audio_decoder_extra_info->seek_count = seek_count = stream->first_frame.seek_count;
+  pthread_mutex_unlock (&stream->first_frame.lock);
+
   running_ticket->acquire (running_ticket, 0);
 
   while (running) {
@@ -90,8 +96,17 @@ static void *audio_decoder_loop (void *stream_gen) {
 
     lprintf ("audio_loop: got package pts = %"PRId64", type = %08x\n", buf->pts, buf->type);
 
-    _x_extra_info_merge( stream->audio_decoder_extra_info, buf->extra_info );
-    stream->audio_decoder_extra_info->seek_count = stream->video_seek_count;
+    if (!buf->extra_info->invalid) {
+      if (buf->extra_info->input_normpos)
+        stream->audio_decoder_extra_info->input_normpos = buf->extra_info->input_normpos;
+      if (buf->extra_info->input_time)
+        stream->audio_decoder_extra_info->input_time = buf->extra_info->input_time;
+      if (buf->extra_info->frame_number)
+        stream->audio_decoder_extra_info->frame_number = buf->extra_info->frame_number;
+      if (buf->extra_info->total_time)
+        stream->audio_decoder_extra_info->total_time = buf->extra_info->total_time;
+    }
+    stream->audio_decoder_extra_info->seek_count = seek_count;
 
     switch (BUFTYPE_BASE (buf->type)) {
 
@@ -286,6 +301,14 @@ static void *audio_decoder_loop (void *stream_gen) {
 
           case BUFTYPE_SUB (BUF_CONTROL_START):
             lprintf ("start\n");
+            stream->audio_decoder_extra_info->input_normpos = 0;
+            stream->audio_decoder_extra_info->input_time = 0;
+            stream->audio_decoder_extra_info->frame_number = 0;
+            stream->audio_decoder_extra_info->total_time = 0;
+            /* are there any early audio senders like demux_image? */
+            pthread_mutex_lock (&stream->first_frame.lock);
+            stream->audio_decoder_extra_info->seek_count = seek_count = stream->first_frame.seek_count;
+            pthread_mutex_unlock (&stream->first_frame.lock);
             /* decoder dispose might call port functions */
             /* running_ticket->acquire(running_ticket, 0); */
             if (stream->audio_decoder_plugin) {
@@ -374,7 +397,6 @@ static void *audio_decoder_loop (void *stream_gen) {
 
           case BUFTYPE_SUB (BUF_CONTROL_RESET_DECODER):
             lprintf ("reset\n");
-            _x_extra_info_reset (stream->audio_decoder_extra_info);
             if (stream->audio_decoder_plugin) {
               /* running_ticket->acquire(running_ticket, 0); */
               stream->audio_decoder_plugin->reset (stream->audio_decoder_plugin);
@@ -387,8 +409,15 @@ static void *audio_decoder_loop (void *stream_gen) {
             goto handle_disc;
 
           case BUFTYPE_SUB (BUF_CONTROL_NEWPTS):
-            t = (buf->decoder_flags & BUF_FLAG_SEEK) ? DISC_STREAMSEEK : DISC_ABSOLUTE;
+            if (buf->decoder_flags & BUF_FLAG_SEEK) {
+              t = DISC_STREAMSEEK;
+            } else {
+              t = DISC_ABSOLUTE;
+            }
           handle_disc:
+            pthread_mutex_lock (&stream->first_frame.lock);
+            stream->audio_decoder_extra_info->seek_count = seek_count = stream->first_frame.seek_count;
+            pthread_mutex_unlock (&stream->first_frame.lock);
             if (stream->audio_decoder_plugin) {
               /* running_ticket->acquire(running_ticket, 0); */
               stream->audio_decoder_plugin->discontinuity (stream->audio_decoder_plugin);

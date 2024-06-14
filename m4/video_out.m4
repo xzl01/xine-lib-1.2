@@ -496,9 +496,9 @@ AC_DEFUN([XINE_VIDEO_OUT_PLUGINS], [
             AC_MSG_CHECKING([whether to enable the xxmc plugin with VLD extensions])
             AC_MSG_RESULT([])
             LIBS="$XXMC_LIBS $X_LIBS $XV_LIBS $LIBS"
-            AC_LINK_IFELSE([AC_LANG_PROGRAM([[]], [[XvMCPutSlice()]])], [have_xxmc=yes],
+            AC_LINK_IFELSE([AC_LANG_PROGRAM([[char XvMCPutSlice(void);]], [[XvMCPutSlice()]])], [have_xxmc=yes],
                            [LIBS="$XXMC_LIBS -lXvMC $X_LIBS $XV_LIBS $LIBS $DYNAMIC_LD_LIBS"
-                            AC_LINK_IFELSE([AC_LANG_PROGRAM([[]], [[XvMCPutSlice()]])],
+                            AC_LINK_IFELSE([AC_LANG_PROGRAM([[char XvMCPutSlice(void);]], [[XvMCPutSlice()]])],
                                            [have_xxmc=yes XXMC_LIBS="$XXMC_LIBS -lXvMC"])])
             if test x"$have_xxmc" = x"yes"; then
                 AC_CHECK_HEADERS([X11/extensions/vldXvMC.h],
@@ -506,9 +506,9 @@ AC_DEFUN([XINE_VIDEO_OUT_PLUGINS], [
                                   AC_DEFINE([HAVE_VLDXVMC], 1, [Define if you have vldXvMC.h])],
                                   [have_vldexts=no])
             else
-                AC_LINK_IFELSE([AC_LANG_PROGRAM([[]], [[XvMCCreateContext()]])], [have_xxmc=yes],
+                AC_LINK_IFELSE([AC_LANG_PROGRAM([[char XvMCCreateContext(void);]], [[XvMCCreateContext()]])], [have_xxmc=yes],
                                [LIBS="$XXMC_LIBS -lXvMC $X_LIBS $XV_LIBS $LIBS"
-                                AC_LINK_IFELSE([AC_LANG_PROGRAM([[]], [[XvMCCreateContext()]])],
+                                AC_LINK_IFELSE([AC_LANG_PROGRAM([[char XvMCCreateContext(void);]], [[XvMCCreateContext()]])],
                                                [have_xxmc=yes XXMC_LIBS="$XXMC_LIBS -lXvMC"])])
             fi
             if test x"$have_xxmc" = x"yes"; then
@@ -521,9 +521,9 @@ AC_DEFUN([XINE_VIDEO_OUT_PLUGINS], [
             AC_MSG_CHECKING([whether to enable the xvmc plugin])
             AC_MSG_RESULT([])
             LIBS="$XVMC_LIBS $X_LIBS $XV_LIBS $LIBS"
-            AC_LINK_IFELSE([AC_LANG_PROGRAM([[]], [[XvMCCreateContext()]])], [have_xvmc=yes],
+            AC_LINK_IFELSE([AC_LANG_PROGRAM([[char XvMCCreateContext(void);]], [[XvMCCreateContext()]])], [have_xvmc=yes],
                            [LIBS="$XVMC_LIBS -lXvMC $X_LIBS $XV_LIBS $LIBS $DYNAMIC_LD_LIBS"
-                            AC_LINK_IFELSE([AC_LANG_PROGRAM([[]], [[XvMCCreateContext()]])],
+                            AC_LINK_IFELSE([AC_LANG_PROGRAM([[char XvMCCreateContext(void);]], [[XvMCCreateContext()]])],
                                            [have_xvmc=yes XVMC_LIBS="$XVMC_LIBS -lXvMC"])])
             if test x"$have_xvmc" = x"yes"; then
                 AC_CHECK_HEADERS([X11/extensions/XvMC.h], [], [have_xvmc=no])

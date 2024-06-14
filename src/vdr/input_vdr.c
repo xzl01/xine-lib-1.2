@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2003-2021 the xine project
+ * Copyright (C) 2003-2023 the xine project
  *
  * This file is part of xine, a free video player.
  *
@@ -116,7 +116,7 @@ vdr_metronom_t;
 typedef struct vdr_osd_s
 {
   xine_osd_t *window;
-  uint8_t    *argb_buffer[ 2 ];
+  uint32_t   *argb_buffer[ 2 ];
   int         width;
   int         height;
 }
@@ -152,8 +152,8 @@ struct vdr_input_plugin_s
   off_t               cur_done;
 
   vdr_osd_t           osd[ VDR_MAX_NUM_WINDOWS ];
-  uint8_t            *osd_buffer;
-  uint32_t            osd_buffer_size;
+  uint32_t           *osd_buffer;
+  uint32_t            osd_buffer_size; /** << in bytes */
   uint8_t             osd_unscaled_blending;
   uint8_t             osd_supports_custom_extent;
   uint8_t             osd_supports_argb_layer;
@@ -646,7 +646,7 @@ break;
         this->osd_buffer_size = this->cur_size;
       }
 
-      n = vdr_read_abort (this->stream, this->fh_control, this->osd_buffer, this->cur_size);
+      n = vdr_read_abort (this->stream, this->fh_control, (uint8_t *)this->osd_buffer, this->cur_size);
       if (n != this->cur_size)
         return -1;
 
@@ -659,47 +659,39 @@ break;
       {
         vdr_osd_t *osd = &this->osd[ data->window ];
 
-        if (data->argb)
-        {
+        if (data->argb) {
           int i;
-          for (i = 0; i < 2; i++)
-          {
-            if (!osd->argb_buffer[ i ])
-              osd->argb_buffer[ i ] = calloc(4 * osd->width, osd->height);
 
-            {
-              int src_stride = 4 * data->width;
-              int dst_stride = 4 * osd->width;
-
-              uint8_t *src = this->osd_buffer;
-              uint8_t *dst = osd->argb_buffer[ i ] + data->y * dst_stride + data->x * 4;
+          for (i = 0; i < 2; i++) {
+            if (!osd->argb_buffer[i])
+              osd->argb_buffer[i] = calloc (1, osd->width * osd->height * sizeof (*osd->argb_buffer[0]));
+            if (osd->argb_buffer[i]) {
+              uint32_t *src = this->osd_buffer;
+              uint32_t *dst = osd->argb_buffer[i] + data->y * osd->width + data->x;
               int y;
 
-              if (src_stride == dst_stride)
-                xine_fast_memcpy(dst, src, src_stride * (size_t)data->height);
-              else
-              {
-                for (y = 0; y < data->height; y++)
-                {
-                  xine_fast_memcpy(dst, src, src_stride);
-                  dst += dst_stride;
-                  src += src_stride;
+              if (data->width == osd->width) {
+                xine_fast_memcpy (dst, src, data->width * data->height * sizeof (*dst));
+              } else {
+                for (y = 0; y < data->height; y++) {
+                  xine_fast_memcpy (dst, src, data->width * sizeof (*dst));
+                  dst += osd->width;
+                  src += data->width;
                 }
               }
+              if (i == 0)
+                xine_osd_set_argb_buffer (osd->window, osd->argb_buffer[i], data->x, data->y, data->width, data->height);
             }
-
-            if (i == 0)
-              xine_osd_set_argb_buffer(osd->window, (uint32_t *)osd->argb_buffer[ i ], data->x, data->y, data->width, data->height);
           }
           /* flip render and display buffer */
           {
-            uint8_t *argb_buffer = osd->argb_buffer[ 0 ];
-            osd->argb_buffer[ 0 ] = osd->argb_buffer[ 1 ];
-            osd->argb_buffer[ 1 ] = argb_buffer;
+            uint32_t *argb_buffer = osd->argb_buffer[0];
+            osd->argb_buffer[0] = osd->argb_buffer[1];
+            osd->argb_buffer[1] = argb_buffer;
           }
         }
         else
-          xine_osd_draw_bitmap(osd->window, this->osd_buffer, data->x, data->y, data->width, data->height, 0);
+          xine_osd_draw_bitmap (osd->window, (uint8_t *)this->osd_buffer, data->x, data->y, data->width, data->height, 0);
       }
     }
     break;

@@ -1,6 +1,6 @@
 /*
  * kate: space-indent on; indent-width 2; mixedindent off; indent-mode cstyle; remove-trailing-space on;
- * Copyright (C) 2012-2022 the xine project
+ * Copyright (C) 2012-2023 the xine project
  * Copyright (C) 2012 Christophe Thommeret <hftom@free.fr>
  *
  * This file is part of xine, a free video player.
@@ -56,6 +56,13 @@
 #include "mem_frame.h"
 #include "hw_frame.h"
 
+#define _FLAG2BIT(_flag) (( \
+    ((0x80000000 - ((_flag) & 0xffff0000)) >> 31) * 16 \
+  + ((0x80000000 - ((_flag) & 0xff00ff00)) >> 31) *  8 \
+  + ((0x80000000 - ((_flag) & 0xf0f0f0f0)) >> 31) *  4 \
+  + ((0x80000000 - ((_flag) & 0xcccccccc)) >> 31) *  2 \
+  + ((0x80000000 - ((_flag) & 0xaaaaaaaa)) >> 31) *  1) ^ 31)
+
 /* Availability of GL_RED and GL_RG is checked at runtime. Define here to avoid build-time dependency. */
 #ifndef GL_RED
 # define GL_RED   0x1903
@@ -64,37 +71,46 @@
 # define GL_RG    0x8227
 #endif
 
+typedef union {
+  uint16_t w[2];
+  uint32_t lw;
+} _opengl2_w2_t;
+
 typedef mem_frame_t opengl2_frame_t;
 
 typedef struct {
   int       ovl_w, ovl_h;
   int       ovl_x, ovl_y;
   
-  GLuint    tex;
   int       tex_w, tex_h;
   
   int       unscaled;
-  int       vid_scale;
 
-  int       extent_width;
-  int       extent_height;
+  _opengl2_w2_t extent_size, extent_known; /* ~0u (yes), 0 (no) */
 } opengl2_overlay_t;
 
 typedef enum {
   OGL2_cscs_NONE = 0,
   OGL2_cscs_yuv420,
+  OGL2_cscs_yuv420g,
   OGL2_cscs_yuv420j,
+  OGL2_cscs_yuv420jg,
+  OGL2_cscs_yuv420j16,
+  OGL2_cscs_yuv420j16g,
   OGL2_cscs_nv12,
+  OGL2_cscs_nv12g,
   OGL2_cscs_yuv422,
+  OGL2_cscs_yuv422g,
   OGL2_cscs_LAST
 } opengl2_csc_shader_t;
 
 typedef struct {
-  int    compiled;
+  /* 0 or ~0 */
+  unsigned int compiled;
   /* The uniform locatiins if this shaders arguments.
    * They seem not to change after compilation, so lets
    * caache them here and avoid many server round trips. */
-  GLint args[7];
+  GLint args[8];
   GLuint shader;
   GLuint program;
   const char *name;
@@ -109,23 +125,69 @@ typedef enum {
   OGL2_TEX_v,
   OGL2_TEX_yuv,
   OGL2_TEX_uv,
-
   OGL2_TEX_HW0,
   OGL2_TEX_HW1,
   OGL2_TEX_HW2,
 
+  OGL2_TEX_CUBIC_TEMP,
+  OGL2_TEX_CUBIC_LUT,
+
   OGL2_TEX_LAST
 } opengl2_tex_t;
 
+static const char _ogl2_tex_names[OGL2_TEX_LAST][12] = {
+  [OGL2_TEX_VIDEO_0]    = "VIDEO_0",
+  [OGL2_TEX_VIDEO_1]    = "VIDEO_1",
+  [OGL2_TEX_y]          = "y",
+  [OGL2_TEX_u_v]        = "u_v",
+  [OGL2_TEX_u]          = "u",
+  [OGL2_TEX_v]          = "v",
+  [OGL2_TEX_yuv]        = "yuv",
+  [OGL2_TEX_uv]         = "uv",
+  [OGL2_TEX_HW0]        = "HW0",
+  [OGL2_TEX_HW1]        = "HW1",
+  [OGL2_TEX_HW2]        = "HW2",
+  [OGL2_TEX_CUBIC_TEMP] = "cubic_temp",
+  [OGL2_TEX_CUBIC_LUT]  = "cubic_lut"
+};
+
 typedef struct {
-  GLuint tex[OGL2_TEX_LAST];
   int width;
   int height;
   int bytes_per_pixel;
   float relw, yuy2_mul, yuy2_div;
 } opengl2_yuvtex_t;
 
-typedef struct {
+typedef enum {
+  SPLINE_CATMULLROM = 0,
+  SPLINE_COS,
+  SPLINE_LAST
+} opengl2_spline_t;
+
+typedef enum {
+  SCALE_SIMPLE = 0,
+  SCALE_LINEAR,
+  SCALE_CATMULLROM,
+  SCALE_COS,
+  SCALE_LAST
+} opengl2_scale_t;
+#define SCALE_MASK 3
+
+static const char _opengl2_scale_names[SCALE_LAST][16] = {
+  [SCALE_SIMPLE]     = "Simple",
+  [SCALE_LINEAR]     = "Linear",
+  [SCALE_CATMULLROM] = "Catmullrom",
+  [SCALE_COS]        = "Cosinus"
+};
+
+static const float _opengl2_lut_y[SCALE_LAST] = {
+  [SCALE_SIMPLE]     = SPLINE_CATMULLROM + 0.5,
+  [SCALE_LINEAR]     = SPLINE_CATMULLROM + 0.5,
+  [SCALE_CATMULLROM] = SPLINE_CATMULLROM + 0.5,
+  [SCALE_COS]        = SPLINE_COS + 0.5
+};
+
+typedef struct opengl2_driver_s {
   vo_driver_t        vo_driver;
   vo_scale_t         sc;
 
@@ -135,30 +197,52 @@ typedef struct {
   GLenum             fmt_1p; /* texture format for single Y/U/V plane */
   GLenum             fmt_2p; /* texture format for interleaved YUY2 or UV plane */
 
+  GLint              lsize;
+  GLchar            *log;
+
   opengl2_program_t  csc_shaders[OGL2_cscs_LAST];
   opengl2_csc_shader_t last_csc_shader;
 
+  GLuint             tex[OGL2_TEX_LAST];
+  GLuint             overlay_tex[XINE_VORAW_MAX_OVL + 1];
+
   opengl2_yuvtex_t   yuvtex;
-  GLuint             videoPBO;
-  GLuint             overlayPBO;
+  struct {
+    uint32_t         index;
+    GLuint           tex;
+  }                  vtex;
+  uint32_t           vPBOindex;
+#define OGL2_NUM_VIDEO_PBO 2
+#define OGL2_OVERLAY_PBO OGL2_NUM_VIDEO_PBO + 1
+  GLuint             PBO[OGL2_NUM_VIDEO_PBO + 2];
   GLuint             fbo;
   int                last_gui_width;
   int                last_gui_height;
 
-  int                ovl_changed;
-  int                ovl_vid_scale;
-  int                num_ovls;
-  uint32_t           ovls_drawn;
-  opengl2_overlay_t  overlays[XINE_VORAW_MAX_OVL];
+  struct {
+    /* "no action" is way most frequent. tweaking this->vo_driver.foo () looks
+     * more elegant, but would it confuse the outside world? */
+    void           (*blend) (struct opengl2_driver_s *this, vo_frame_t *frame_gen, vo_overlay_t *overlay);
+    void           (*end)   (struct opengl2_driver_s *this, vo_frame_t *vo_img);
+    int              changed, num;
+    uint8_t          unscaled_list[XINE_VORAW_MAX_OVL + 1];
+    opengl2_overlay_t buf[XINE_VORAW_MAX_OVL];
+  }                  ovl;
 
   float              csc_matrix[3 * 4];
+  float              join16[2];
+  int                input_bits;
   int                color_standard;
   int                update_csc;
-  int                input_scale;
   int                saturation;
   int                contrast;
   int                brightness;
   int                hue;
+  struct {
+    /* 누를가마 ;-) */
+    int              value, changed;
+    float            gamma2, gamma1;
+  }                  gamma;
   struct {
     int              value, changed;
     float            mid, side, corn;
@@ -170,11 +254,11 @@ typedef struct {
 
   struct {
     opengl2_program_t pass1_program, pass2_program;
-    GLuint            lut_texture;
-    GLuint            pass1_texture;
     GLuint            fbo;
     int               pass1_tex_w, pass1_tex_h;
-    int               scale;
+    int               mode_changed, mode_changing, mode1;
+    opengl2_scale_t   mode2;
+    float             lut_y;
 #define OGL2_BC_LUT    1
 #define OGL2_BC_PROG_1 2
 #define OGL2_BC_PROG_2 4
@@ -294,8 +378,187 @@ static void opengl2_accel_lock (vo_frame_t *frame, int lock) {
   (void)lock;
 }
 
-static const char * const bicubic_pass1_args[] = {"ARB", "tex", "lut", "spline", NULL};
-static const char *bicubic_pass1_frag=
+static GLint _opengl2_next_videoPBO (opengl2_driver_t *this) {
+  this->vPBOindex = (this->vPBOindex + 1) & (OGL2_NUM_VIDEO_PBO - 1);
+  return this->PBO[this->vPBOindex];
+}
+
+static const char *_ogl2_fmt2str (uint32_t v) {
+  static const struct {
+    uint32_t v;
+    char name[16];
+  } list[] = {
+    {0x1900, "INDEX"},
+    {0x1903, "RED"},
+    {0x1904, "GREEN"},
+    {0x1905, "BLUE"},
+    {0x1906, "ALPHA"},
+    {0x1907, "RGB"},
+    {0x1908, "RGBA"},
+    {0x1909, "LUMA"},
+    {0x190A, "LUMA_ALPHA"},
+    {0x2A10, "R3_G3_B2"},
+    {0x803B, "ALPHA4"},
+    {0x803C, "ALPHA8"},
+    {0x803D, "ALPHA12"},
+    {0x803E, "ALPHA16"},
+    {0x803F, "LUMA4"},
+    {0x8040, "LUMA8"},
+    {0x8041, "LUMA12"},
+    {0x8042, "LUMA16"},
+    {0x8043, "LUMA4_ALPHA4"},
+    {0x8044, "LUMA6_ALPHA2"},
+    {0x8045, "LUMA8_ALPHA8"},
+    {0x8046, "LUMA12_ALPHA4"},
+    {0x8047, "LUMA12_ALPHA12"},
+    {0x8048, "LUMA16_ALPHA16"},
+    {0x8049, "INTENSITY"},
+    {0x804A, "INTENSITY4"},
+    {0x804B, "INTENSITY8"},
+    {0x804C, "INTENSITY12"},
+    {0x804D, "INTENSITY16"},
+    {0x804F, "RGB4"},
+    {0x8050, "RGB5"},
+    {0x8051, "RGB8"},
+    {0x8052, "RGB10"},
+    {0x8053, "RGB12"},
+    {0x8054, "RGB16"},
+    {0x8055, "RGBA2"},
+    {0x8056, "RGBA4"},
+    {0x8057, "RGB5_A1"},
+    {0x8058, "RGBA8"},
+    {0x8059, "RGB10_A2"},
+    {0x805A, "RGBA12"},
+    {0x805B, "RGBA16"},
+    {0x80E0, "BGR"},
+    {0x80E1, "BGRA"},
+    {0x8227, "RG"},
+    {0x8228, "RG_INT"},
+    {0x8229, "R8"},
+    {0x822A, "R16"},
+    {0x822B, "RG8"},
+    {0x822C, "RG16"},
+    {0x822D, "R16F"},
+    {0x822E, "R32F"},
+    {0x822F, "RG16F"},
+    {0x8230, "RG32F"},
+    {0x8231, "R8I"},
+    {0x8232, "R8UI"},
+    {0x8233, "R16I"},
+    {0x8234, "R16UI"},
+    {0x8235, "R32I"},
+    {0x8236, "R32UI"},
+    {0x8237, "RG8I"},
+    {0x8238, "RG8UI"},
+    {0x8239, "RG16I"},
+    {0x823A, "RG16UI"},
+    {0x823B, "RG32I"},
+    {0x823C, "RG32UI"},
+    {0x8814, "RGBA32F"},
+    {0x8815, "RGB32F"},
+    {0x881A, "RGBA16F"},
+    {0x881B, "RGB16F"},
+    {0x8D70, "RGBA32UI"},
+    {0x8D71, "RGB32UI"},
+    {0x8D76, "RGBA16UI"},
+    {0x8D77, "RGB16UI"},
+    {0x8D7C, "RGBA8UI"},
+    {0x8D7D, "RGB8UI"},
+    {0x8D82, "RGBA32I"},
+    {0x8D83, "RGB32I"},
+    {0x8D88, "RGBA16I"},
+    {0x8D89, "RGB16I"},
+    {0x8D8E, "RGBA8I"},
+    {0x8D8F, "RGB8I"},
+    {0x8D94, "RED_INT"},
+    {0x8D95, "GREEN_INT"},
+    {0x8D96, "BLUE_INT"},
+    {0x8D98, "RGB_INT"},
+    {0x8D99, "RGBA_INT"},
+    {0x8D9A, "BGR_INT"},
+    {0x8D9B, "BGRA_INT"},
+  };
+  uint32_t b = 0, e = sizeof (list) / sizeof (list[0]);
+
+  do {
+    uint32_t m = (b + e) >> 1;
+
+    if (v < list[m].v)
+      e = m;
+    else if (v > list[m].v)
+      b = m + 1;
+    else
+      return list[m].name;
+  } while (b != e);
+  return "";
+}
+
+static void _ogl2_str2hex (char **q, uint32_t v) {
+  static const char tab_hex[16] = "0123456789abcdef";
+  char *d = *q;
+  uint32_t n = 8;
+
+  while ((n > 1) && !(v & 0xf0000000))
+    v <<= 4, n--;
+  while (n > 0) {
+    *d++ = tab_hex[v >> 28];
+    v <<= 4, n--;
+  }
+  *q = d;
+}
+
+static void _ogl2_dump_tex_fmts (opengl2_driver_t *this) {
+  char buf[2048], *q = buf;
+  const char *p;
+  uint32_t u, l;
+  GLint res[OGL2_TEX_LAST + 1];
+
+  if (this->xine->verbosity < XINE_VERBOSITY_DEBUG)
+    return;
+
+  glActiveTexture (GL_TEXTURE0);
+  for (u = 0; u < OGL2_TEX_LAST; u++) {
+    res[u] = 0;
+    if (this->tex[u]) {
+      glBindTexture (GL_TEXTURE_RECTANGLE_ARB, this->tex[u]);
+      glGetTexLevelParameteriv (GL_TEXTURE_RECTANGLE_ARB, 0, GL_TEXTURE_INTERNAL_FORMAT, res + u);
+    }
+  }
+  glBindTexture (GL_TEXTURE_RECTANGLE_ARB, 0);
+  glFlush ();
+
+  p = LOG_MODULE ": internal texture formats:\n  ";
+  l = strlen (p);
+  memcpy (q, p, l);
+  q += l;
+
+  res[OGL2_TEX_LAST] = res[OGL2_TEX_LAST - 1] + 1;
+  for (u = 0; u < OGL2_TEX_LAST; u++) {
+    p = _ogl2_tex_names[u]; l = strlen (p); memcpy (q, p, l); q += l;
+    if (res[u] == res[u + 1]) {
+      memcpy (q, ", ", 2); q += 2;
+    } else {
+      const char *name = _ogl2_fmt2str (res[u]);
+
+      memcpy (q, ": 0x", 4); q += 4;
+      _ogl2_str2hex (&q, res[u]);
+      if (name[0]) {
+        memcpy (q, " (", 2); q += 2;
+        l = strlen (name); memcpy (q, name, l); q += l;
+        *q++ = ')';
+      }
+      memcpy (q, "\n  ", 3); q += 3;
+    }
+  }
+  q -= 2;
+  q[0] = 0;
+  xprintf (this->xine, XINE_VERBOSITY_DEBUG, "%s", buf);
+}
+
+typedef char opengl2_shader_arg_name_t[8];
+
+static const opengl2_shader_arg_name_t bicubic_pass1_args[] = {"ARB", "tex", "lut", "spline", ""};
+static const char bicubic_pass1_frag[] =
 "#extension GL_ARB_texture_rectangle : enable\n"
 "uniform sampler2DRect tex, lut;\n"
 "uniform float spline;\n"
@@ -310,8 +573,8 @@ static const char *bicubic_pass1_frag=
 "    gl_FragColor = sum;\n"
 "}\n";
 
-static const char * const bicubic_pass2_args[] = {"ARB", "tex", "lut", "spline", NULL};
-static const char *bicubic_pass2_frag=
+static const opengl2_shader_arg_name_t bicubic_pass2_args[] = {"ARB", "tex", "lut", "spline", ""};
+static const char bicubic_pass2_frag[] =
 "#extension GL_ARB_texture_rectangle : enable\n"
 "uniform sampler2DRect tex, lut;\n"
 "uniform float spline;\n"
@@ -327,77 +590,77 @@ static const char *bicubic_pass2_frag=
 "}\n";
 
 #define LUTWIDTH 1000
-#define N_SPLINES 2
-#define CATMULLROM_SPLINE   0
-#define COS_SPLINE          1
 
-static float compute_cos_spline( float x )
-{
-    if ( x < 0.0 )
-        x = -x;
-    return 0.5 * cos( M_PI * x / 2.0 ) + 0.5;
+/* TJ. This came out while experimenting with test://y_resolution.bmp :-)
+ * (0.00 +0.25 2.00) = { 1.0000 0,5971 0,3150 0,1199 0.0000 -0,0526 -0,0533 -0,0269 0.0000 } */
+static double _opengl2_cos_spline (double x) {
+  if (x < 0.0)
+    x = -x;
+  return cos (M_PI * 0.25 * x * (x + 1.0)) * pow (2.0, -2.8 * x);
 }
 
-static float compute_catmullrom_spline( float x )
-{
-    if ( x < 0.0 )
-        x = -x;
-    if ( x < 1.0 )
-        return ((9.0 * (x * x * x)) - (15.0 * (x * x)) + 6.0) / 6.0;
-    if ( x <= 2.0 )
-        return ((-3.0 * (x * x * x)) + (15.0 * (x * x)) - (24.0 * x) + 12.0) / 6.0;
-    return 0.0;
+/* (0.00 +0.25 2.00) = { 1.0000 0.8672 0.5625 0,2265 0.0000 -0,0703 -0,0625 -0,0234 0.0000 } */
+static double _opengl2_catmullrom_spline (double x) {
+  if (x < 0.0)
+    x = -x;
+  if (x < 1.0)
+    return 1.5 * x * x * x - 2.5 * x * x + 1.0;
+  return -0.5 * x * x * x + 2.5 * x * x - 4.0 * x + 2.0;
 }
+
+static double (* const _opengl2_spline[SPLINE_LAST]) (double x) = {
+  [SPLINE_CATMULLROM] = _opengl2_catmullrom_spline,
+  [SPLINE_COS]        = _opengl2_cos_spline
+};
 
 static int create_lut_texture( opengl2_driver_t *that )
 {
-  int i = 0;
-  float *lut = calloc( sizeof(float) * LUTWIDTH * 4 * N_SPLINES, 1 );
+  uint32_t i;
+  float *lut = calloc( sizeof(float) * LUTWIDTH * 4 * SPLINE_LAST, 1 );
   if ( !lut )
     return 0;
 
-  while ( i < LUTWIDTH ) {
-    float t, v1, v2, v3, v4, coefsum;
-    t = (float)i / (float)LUTWIDTH;
+  for (i = 0; i < LUTWIDTH; i++) {
+    opengl2_spline_t s;
+    float *p = lut + i * 4;
+    double t = (double)i / (double)LUTWIDTH;
 
-    v1 = compute_catmullrom_spline( t + 1.0 ); coefsum  = v1;
-    v2 = compute_catmullrom_spline( t );       coefsum += v2;
-    v3 = compute_catmullrom_spline( t - 1.0 ); coefsum += v3;
-    v4 = compute_catmullrom_spline( t - 2.0 ); coefsum += v4;
-    lut[i * 4]       = v1 / coefsum;
-    lut[(i * 4) + 1] = v2 / coefsum;
-    lut[(i * 4) + 2] = v3 / coefsum;
-    lut[(i * 4) + 3] = v4 / coefsum;
+    for (s = (opengl2_spline_t)0; s < SPLINE_LAST; s++) {
+      double v1, v2, v3, v4, coefsum;
 
-    lut[(i * 4) + (LUTWIDTH * 4)] = compute_cos_spline( t + 1.0 );
-    lut[(i * 4) + (LUTWIDTH * 4) + 1] = compute_cos_spline( t );
-    lut[(i * 4) + (LUTWIDTH * 4) + 2] = compute_cos_spline( t - 1.0 );
-    lut[(i * 4) + (LUTWIDTH * 4) + 3] = compute_cos_spline( t - 2.0 );
-
-    ++i;
+      v1 = _opengl2_spline[s] (t + 1.0); coefsum  = v1;
+      v2 = _opengl2_spline[s] (t);       coefsum += v2;
+      v3 = _opengl2_spline[s] (t - 1.0); coefsum += v3;
+      v4 = _opengl2_spline[s] (t - 2.0); coefsum += v4;
+      coefsum = 1.0 / coefsum;
+      p[(uint32_t)s * LUTWIDTH * 4 + 0] = v1 * coefsum;
+      p[(uint32_t)s * LUTWIDTH * 4 + 1] = v2 * coefsum;
+      p[(uint32_t)s * LUTWIDTH * 4 + 2] = v3 * coefsum;
+      p[(uint32_t)s * LUTWIDTH * 4 + 3] = v4 * coefsum;
+    }
   }
 
-  that->bicubic.lut_texture = 0;
-  glGenTextures (1, &that->bicubic.lut_texture);
-  if (!that->bicubic.lut_texture) {
-    free( lut );
+  that->tex[OGL2_TEX_CUBIC_LUT] = 0;
+  glGenTextures (1, &that->tex[OGL2_TEX_CUBIC_LUT]);
+  if (!that->tex[OGL2_TEX_CUBIC_LUT]) {
+    free (lut);
     return 0;
   }
   that->bicubic.flags &= ~OGL2_BC_LUT;
 
-  glBindTexture (GL_TEXTURE_RECTANGLE_ARB, that->bicubic.lut_texture);
+  glBindTexture (GL_TEXTURE_RECTANGLE_ARB, that->tex[OGL2_TEX_CUBIC_LUT]);
   glTexParameteri( GL_TEXTURE_RECTANGLE_ARB, GL_TEXTURE_MAG_FILTER, GL_NEAREST );
   glTexParameteri( GL_TEXTURE_RECTANGLE_ARB, GL_TEXTURE_MIN_FILTER, GL_NEAREST );
   glTexParameteri( GL_TEXTURE_RECTANGLE_ARB, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE );
   glTexParameteri( GL_TEXTURE_RECTANGLE_ARB, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE );
-  glTexImage2D( GL_TEXTURE_RECTANGLE_ARB, 0, GL_RGBA32F, LUTWIDTH, N_SPLINES, 0, GL_RGBA, GL_FLOAT, lut );
+  glTexImage2D( GL_TEXTURE_RECTANGLE_ARB, 0, GL_RGBA32F, LUTWIDTH, SPLINE_LAST, 0, GL_RGBA, GL_FLOAT, lut );
   free( lut );
   glBindTexture( GL_TEXTURE_RECTANGLE_ARB, 0 );
   return 1;
 }
 
-static const char * const blur_sharpen_args[] = {"ARB", "tex", "mid", "side", "corn", NULL};
-static const char *blur_sharpen_frag=
+static const opengl2_shader_arg_name_t blur_sharpen_args[] = {"ARB", "tex", "mid", "side", "corn", ""};
+static const char blur_sharpen_frag[] =
 "#extension GL_ARB_texture_rectangle : enable\n"
 "uniform sampler2DRect tex;\n"
 "uniform float mid, side, corn;\n"
@@ -416,8 +679,8 @@ static const char *blur_sharpen_frag=
 "  gl_FragColor = c1 ;\n"
 "}\n";
 
-static const char * const yuv420_args[] = {"r_coefs", "g_coefs", "b_coefs", "texY", "texU", "texV", NULL};
-static const char *yuv420_frag =
+static const opengl2_shader_arg_name_t yuv420_args[] = {"r_coefs", "g_coefs", "b_coefs", "texY", "texU", "texV", ""};
+static const char yuv420_frag[] =
 "uniform sampler2D texY, texU, texV;\n"
 "uniform vec4 r_coefs, g_coefs, b_coefs;\n"
 "void main(void) {\n"
@@ -435,8 +698,53 @@ static const char *yuv420_frag =
 "    gl_FragColor = rgb;\n"
 "}\n";
 
-static const char * const yuv420j_args[] = {"r_coefs", "g_coefs", "b_coefs", "texY", "tex_U_V", NULL};
-static const char *yuv420j_frag =
+static const opengl2_shader_arg_name_t yuv420g_args[] = {
+  "r_coefs", "g_coefs", "b_coefs", "texY", "texU", "texV", "gamma2", "gamma1", ""
+};
+static const char yuv420g_frag[] =
+"uniform sampler2D texY, texU, texV;\n"
+"uniform vec4 r_coefs, g_coefs, b_coefs, gamma2, gamma1;\n"
+"void main(void) {\n"
+"    vec4 rgb;\n"
+"    vec4 yuv;\n"
+"    vec2 coord = gl_TexCoord[0].xy;\n"
+"    yuv.r = texture2D (texY, coord).r;\n"
+"    yuv.g = texture2D (texU, coord).r;\n"
+"    yuv.b = texture2D (texV, coord).r;\n"
+"    yuv.a = 1.0;\n"
+"    rgb.r = dot (yuv, r_coefs);\n"
+"    rgb.g = dot (yuv, g_coefs);\n"
+"    rgb.b = dot (yuv, b_coefs);\n"
+"    rgb.a = 1.0;\n"
+"    rgb = rgb * rgb * gamma2 + rgb * gamma1;\n"
+"    gl_FragColor = rgb;\n"
+"}\n";
+
+static const opengl2_shader_arg_name_t yuv420jg_args[] = {
+  "r_coefs", "g_coefs", "b_coefs", "texY", "tex_U_V", "gamma2", "gamma1", ""
+};
+static const char yuv420jg_frag[] =
+"uniform sampler2D texY, tex_U_V;\n"
+"uniform vec4 r_coefs, g_coefs, b_coefs, gamma2, gamma1;\n"
+"void main(void) {\n"
+"    vec4 rgb;\n"
+"    vec4 yuv;\n"
+"    vec2 coord_y = gl_TexCoord[0].xy;\n"
+"    vec2 coord_u_v = coord_y * vec2 (1.0, 0.5);\n"
+"    yuv.r = texture2D (texY, coord_y).r;\n"
+"    yuv.g = texture2D (tex_U_V, coord_u_v).r;\n"
+"    yuv.b = texture2D (tex_U_V, coord_u_v + vec2 (0.0, 0.5)).r;\n"
+"    yuv.a = 1.0;\n"
+"    rgb.r = dot (yuv, r_coefs);\n"
+"    rgb.g = dot (yuv, g_coefs);\n"
+"    rgb.b = dot (yuv, b_coefs);\n"
+"    rgb.a = 1.0;\n"
+"    rgb = rgb * rgb * gamma2 + rgb * gamma1;\n"
+"    gl_FragColor = rgb;\n"
+"}\n";
+
+static const opengl2_shader_arg_name_t yuv420j_args[] = {"r_coefs", "g_coefs", "b_coefs", "texY", "tex_U_V", ""};
+static const char yuv420j_frag[] =
 "uniform sampler2D texY, tex_U_V;\n"
 "uniform vec4 r_coefs, g_coefs, b_coefs;\n"
 "void main(void) {\n"
@@ -455,56 +763,171 @@ static const char *yuv420j_frag =
 "    gl_FragColor = rgb;\n"
 "}\n";
 
-static const char * const nv12_args[] = {"r_coefs", "g_coefs", "b_coefs", "texY", "texUV", NULL};
-#define nv12_frag                               \
-  "uniform sampler2D texY, texUV;\n"            \
-  "uniform vec4 r_coefs, g_coefs, b_coefs;\n"   \
-  "void main (void) {\n"                        \
-  "    vec4 rgb;\n"                             \
-  "    vec4 yuv;\n"                             \
-  "    vec2 coord = gl_TexCoord[0].xy;\n"       \
-  "    yuv.r = texture2D (texY, coord).r;\n"    \
-  "    yuv.g = texture2D (texUV, coord).r;\n"   \
-  "    yuv.b = texture2D (texUV, coord).%s;\n"  \
-  "    yuv.a = 1.0;\n"                          \
-  "    rgb.r = dot( yuv, r_coefs );\n"          \
-  "    rgb.g = dot( yuv, g_coefs );\n"          \
-  "    rgb.b = dot( yuv, b_coefs );\n"          \
-  "    rgb.a = 1.0;\n"                          \
-  "    gl_FragColor = rgb;\n"                   \
-  "}\n"
+static const opengl2_shader_arg_name_t yuv420j16_args[] = {"r_coefs", "g_coefs", "b_coefs", "texY", "tex_U_V", "join16", ""};
+static const char yuv420j16_frag[] =
+"uniform sampler2D texY, tex_U_V;\n"
+"uniform vec4 r_coefs, g_coefs, b_coefs;\n"
+"uniform vec2 join16;\n"
+"void main(void) {\n"
+"    vec4 rgb;\n"
+"    vec4 yuv;\n"
+"    vec2 coord_y = gl_TexCoord[0].xy;\n"
+"    vec2 coord_u_v = coord_y * vec2 (1.0, 0.5);\n"
+"    yuv.r = dot (texture2D (texY, coord_y).r$, join16);\n"
+"    yuv.g = dot (texture2D (tex_U_V, coord_u_v).r$, join16);\n"
+"    yuv.b = dot (texture2D (tex_U_V, coord_u_v + vec2 (0.0, 0.5)).r$, join16);\n"
+"    yuv.a = 1.0;\n"
+"    rgb.r = dot (yuv, r_coefs);\n"
+"    rgb.g = dot (yuv, g_coefs);\n"
+"    rgb.b = dot (yuv, b_coefs);\n"
+"    rgb.a = 1.0;\n"
+"    gl_FragColor = rgb;\n"
+"}\n";
 
-static const char * const yuv422_args[] = {"r_coefs", "g_coefs", "b_coefs", "texYUV", "yuy2vals", NULL};
-#define yuv422_frag                                             \
-  "uniform sampler2D texYUV;\n"                                 \
-  "uniform vec4 r_coefs, g_coefs, b_coefs;\n"                   \
-  "uniform vec2 yuy2vals;\n"                                    \
-  "void main(void) {\n"                                         \
-  "    vec4 rgba;\n"                                            \
-  "    vec4 yuv;\n"                                             \
-  "    vec4 coord = gl_TexCoord[0].xyxx;\n"                     \
-  "    float group_x = floor (coord.x * yuy2vals.x);\n"         \
-  "    coord.z = (group_x + 0.25) * yuy2vals.y;\n"              \
-  "    coord.w = (group_x + 0.75) * yuy2vals.y;\n"              \
-  "    yuv.r = texture2D (texYUV, coord.xy).r;\n"               \
-  "    yuv.g = texture2D (texYUV, coord.zy).%s;\n"              \
-  "    yuv.b = texture2D (texYUV, coord.wy).%s;\n"              \
-  "    yuv.a = 1.0;\n"                                          \
-  "    rgba.r = dot (yuv, r_coefs);\n"                          \
-  "    rgba.g = dot (yuv, g_coefs);\n"                          \
-  "    rgba.b = dot (yuv, b_coefs);\n"                          \
-  "    rgba.a = 1.0;\n"                                         \
-  "    gl_FragColor = rgba;\n"                                  \
-  "}\n"
+static const opengl2_shader_arg_name_t yuv420j16g_args[] = {
+  "r_coefs", "g_coefs", "b_coefs", "texY", "tex_U_V", "join16", "gamma2", "gamma1", ""
+};
+static const char yuv420j16g_frag[] =
+"uniform sampler2D texY, tex_U_V;\n"
+"uniform vec4 r_coefs, g_coefs, b_coefs, gamma2, gamma1;\n"
+"uniform vec2 join16;\n"
+"void main(void) {\n"
+"    vec4 rgb;\n"
+"    vec4 yuv;\n"
+"    vec2 coord_y = gl_TexCoord[0].xy;\n"
+"    vec2 coord_u_v = coord_y * vec2 (1.0, 0.5);\n"
+"    yuv.r = dot (texture2D (texY, coord_y).r$, join16);\n"
+"    yuv.g = dot (texture2D (tex_U_V, coord_u_v).r$, join16);\n"
+"    yuv.b = dot (texture2D (tex_U_V, coord_u_v + vec2 (0.0, 0.5)).r$, join16);\n"
+"    yuv.a = 1.0;\n"
+"    rgb.r = dot (yuv, r_coefs);\n"
+"    rgb.g = dot (yuv, g_coefs);\n"
+"    rgb.b = dot (yuv, b_coefs);\n"
+"    rgb.a = 1.0;\n"
+"    rgb = rgb * rgb * gamma2 + rgb * gamma1;\n"
+"    gl_FragColor = rgb;\n"
+"}\n";
+
+static const opengl2_shader_arg_name_t nv12_args[] = {"r_coefs", "g_coefs", "b_coefs", "texY", "texUV", ""};
+static const char nv12_frag[] =
+"uniform sampler2D texY, texUV;\n"
+"uniform vec4 r_coefs, g_coefs, b_coefs;\n"
+"void main (void) {\n"
+"    vec4 rgb;\n"
+"    vec4 yuv;\n"
+"    vec2 coord = gl_TexCoord[0].xy;\n"
+"    yuv.r = texture2D (texY, coord).r;\n"
+"    yuv.g = texture2D (texUV, coord).r;\n"
+"    yuv.b = texture2D (texUV, coord).$;\n"
+"    yuv.a = 1.0;\n"
+"    rgb.r = dot( yuv, r_coefs );\n"
+"    rgb.g = dot( yuv, g_coefs );\n"
+"    rgb.b = dot( yuv, b_coefs );\n"
+"    rgb.a = 1.0;\n"
+"    gl_FragColor = rgb;\n"
+"}\n";
+
+static const opengl2_shader_arg_name_t nv12g_args[] = {
+  "r_coefs", "g_coefs", "b_coefs", "texY", "texUV", "gamma2", "gamma1", ""};
+static const char nv12g_frag[] =
+"uniform sampler2D texY, texUV;\n"
+"uniform vec4 r_coefs, g_coefs, b_coefs, gamma2, gamma1;\n"
+"void main (void) {\n"
+"    vec4 rgb;\n"
+"    vec4 yuv;\n"
+"    vec2 coord = gl_TexCoord[0].xy;\n"
+"    yuv.r = texture2D (texY, coord).r;\n"
+"    yuv.g = texture2D (texUV, coord).r;\n"
+"    yuv.b = texture2D (texUV, coord).$;\n"
+"    yuv.a = 1.0;\n"
+"    rgb.r = dot( yuv, r_coefs );\n"
+"    rgb.g = dot( yuv, g_coefs );\n"
+"    rgb.b = dot( yuv, b_coefs );\n"
+"    rgb.a = 1.0;\n"
+"    rgb = rgb * rgb * gamma2 + rgb * gamma1;\n"
+"    gl_FragColor = rgb;\n"
+"}\n";
+
+static const opengl2_shader_arg_name_t yuv422_args[] = {"r_coefs", "g_coefs", "b_coefs", "texYUV", "yuy2v", ""};
+static const char yuv422_frag[] =
+"uniform sampler2D texYUV;\n"
+"uniform vec4 r_coefs, g_coefs, b_coefs;\n"
+"uniform vec2 yuy2v;\n"
+"void main(void) {\n"
+"    vec4 rgba;\n"
+"    vec4 yuv;\n"
+"    vec4 coord = gl_TexCoord[0].xyxx;\n"
+"    float group_x = floor (coord.x * yuy2v.x);\n"
+"    coord.z = (group_x + 0.25) * yuy2v.y;\n"
+"    coord.w = (group_x + 0.75) * yuy2v.y;\n"
+"    yuv.r = texture2D (texYUV, coord.xy).r;\n"
+"    yuv.g = texture2D (texYUV, coord.zy).$;\n"
+"    yuv.b = texture2D (texYUV, coord.wy).$;\n"
+"    yuv.a = 1.0;\n"
+"    rgba.r = dot (yuv, r_coefs);\n"
+"    rgba.g = dot (yuv, g_coefs);\n"
+"    rgba.b = dot (yuv, b_coefs);\n"
+"    rgba.a = 1.0;\n"
+"    gl_FragColor = rgba;\n"
+"}\n";
+
+static const opengl2_shader_arg_name_t yuv422g_args[] = {
+  "r_coefs", "g_coefs", "b_coefs", "texYUV", "yuy2v", "gamma2", "gamma1", ""
+};
+static const char yuv422g_frag[] =
+"uniform sampler2D texYUV;\n"
+"uniform vec4 r_coefs, g_coefs, b_coefs, gamma2, gamma1;\n"
+"uniform vec2 yuy2v;\n"
+"void main(void) {\n"
+"    vec4 rgba;\n"
+"    vec4 yuv;\n"
+"    vec4 coord = gl_TexCoord[0].xyxx;\n"
+"    float group_x = floor (coord.x * yuy2v.x);\n"
+"    coord.z = (group_x + 0.25) * yuy2v.y;\n"
+"    coord.w = (group_x + 0.75) * yuy2v.y;\n"
+"    yuv.r = texture2D (texYUV, coord.xy).r;\n"
+"    yuv.g = texture2D (texYUV, coord.zy).$;\n"
+"    yuv.b = texture2D (texYUV, coord.wy).$;\n"
+"    yuv.a = 1.0;\n"
+"    rgba.r = dot (yuv, r_coefs);\n"
+"    rgba.g = dot (yuv, g_coefs);\n"
+"    rgba.b = dot (yuv, b_coefs);\n"
+"    rgba.a = 1.0;\n"
+"    rgba = rgba * rgba * gamma2 + rgba * gamma1;\n"
+"    gl_FragColor = rgba;\n"
+"}\n";
+
+static void opengl2_free_log_buf (opengl2_driver_t *this) {
+  free (this->log);
+  this->log = NULL;
+  this->lsize = 0;
+}
+
+static int opengl2_log_buf (opengl2_driver_t *this, GLint size) {
+  /* a log size of 1 usually means just 1 empty line, skip. */
+  if ((unsigned int)(size - 2) >= (1 << 20))
+    return 0;
+
+  if (size <= this->lsize)
+    return 1;
+
+  this->lsize = 0;
+  free (this->log);
+  size = (size + 1023) & ~1023;
+  this->log = malloc (size);
+  if (!this->log)
+    return 0;
+
+  this->lsize = size;
+  return 1;
+}
 
 static int opengl2_build_program (opengl2_driver_t *this,
-  opengl2_program_t *prog, const char *source, const char *name,
-  const char * const *arg_names) {
+  opengl2_program_t *prog, const char *source, const char *name, const opengl2_shader_arg_name_t *arg_names) {
   const char *s = source;
-  GLint length;
-  GLchar *log;
+  GLint length, result;
 
-  xprintf( this->xine, XINE_VERBOSITY_DEBUG, LOG_MODULE ": compiling shader %s\n", name );
+  xprintf (this->xine, XINE_VERBOSITY_DEBUG, LOG_MODULE ": compiling shader %s.\n", name);
   prog->name = name;
   if ( !(prog->shader = glCreateShader( GL_FRAGMENT_SHADER )) )
     return 0;
@@ -514,61 +937,61 @@ static int opengl2_build_program (opengl2_driver_t *this,
   glShaderSource (prog->shader, 1, &s, NULL);
   glCompileShader (prog->shader);
 
-  glGetShaderiv( prog->shader, GL_INFO_LOG_LENGTH, &length );
-  log = (GLchar*)malloc( length );
-  if ( !log )
-    return 0;
-
-  glGetShaderInfoLog( prog->shader, length, &length, log );
-  if ( length ) {
-    xprintf( this->xine, XINE_VERBOSITY_DEBUG, LOG_MODULE ": Shader %s Compilation Log:\n", name );
-    if ( this->xine->verbosity >= XINE_VERBOSITY_DEBUG ) {
-      fwrite( log, 1, length, stdout );
-      fflush( stdout );
+  length = 0;
+  glGetShaderiv (prog->shader, GL_INFO_LOG_LENGTH, &length);
+  if (opengl2_log_buf (this, length)) {
+    length = 0;
+    glGetShaderInfoLog (prog->shader, length, &length, this->log);
+    if ((unsigned int)(length - 1) < (1 << 20)) {
+      xprintf (this->xine, XINE_VERBOSITY_DEBUG, LOG_MODULE ": Shader %s Compilation Log:\n", name);
+      if (this->xine->verbosity >= XINE_VERBOSITY_DEBUG) {
+        fwrite (this->log, 1, length, stdout);
+        fflush (stdout);
+      }
     }
   }
-  free( log );
 
-  GLint result;
-  glGetShaderiv( prog->shader, GL_COMPILE_STATUS, &result );
+  result = GL_FALSE;
+  glGetShaderiv (prog->shader, GL_COMPILE_STATUS, &result);
   if (result != GL_TRUE) {
-    xprintf( this->xine, XINE_VERBOSITY_LOG, LOG_MODULE ": compiling shader %s failed\n", name );
+    xprintf (this->xine, XINE_VERBOSITY_LOG, LOG_MODULE ": compiling shader %s failed.\n", name);
     return 0;
   }
 
   glAttachShader( prog->program, prog->shader );
   glLinkProgram( prog->program );
-  glGetProgramiv( prog->program, GL_INFO_LOG_LENGTH, &length );
-  log = (GLchar*)malloc( length );
-  if ( !log )
-    return 0;
 
-  glGetProgramInfoLog( prog->program, length, &length, log );
-  if ( length ) {
-    xprintf( this->xine, XINE_VERBOSITY_DEBUG, LOG_MODULE ": Shader %s Linking Log:\n", name );
-    if ( this->xine->verbosity >= XINE_VERBOSITY_DEBUG ) {
-      fwrite( log, 1, length, stdout );
-      fwrite( "\n", 1, 1, stdout );
-      fflush( stdout );
+  length = 0;
+  glGetProgramiv (prog->program, GL_INFO_LOG_LENGTH, &length);
+  if (opengl2_log_buf (this, length)) {
+    length = 0;
+    glGetProgramInfoLog (prog->program, length, &length, this->log);
+    if ((unsigned int)(length - 1) < (1 << 20)) {
+      xprintf (this->xine, XINE_VERBOSITY_DEBUG, LOG_MODULE ": Shader %s Linking Log:\n", name);
+      if (this->xine->verbosity >= XINE_VERBOSITY_DEBUG) {
+        fwrite (this->log, 1, length, stdout);
+        fwrite ("\n", 1, 1, stdout);
+        fflush (stdout);
+      }
     }
   }
-  free( log );
 
+  result = GL_FALSE;
   glGetProgramiv( prog->program, GL_LINK_STATUS, &result );
   if (result != GL_TRUE) {
-    xprintf( this->xine, XINE_VERBOSITY_LOG, LOG_MODULE ": linking shader %s failed\n", name );
+    xprintf (this->xine, XINE_VERBOSITY_LOG, LOG_MODULE ": linking shader %s failed.\n", name);
     return 0;
   }
 
-  prog->compiled = 1;
+  prog->compiled = ~0u;
 
   {
     unsigned int u;
-    if (!strcmp (arg_names[0], "ARB")) {
-      for (u = 0; arg_names[u + 1]; u++)
+    if (!memcmp (arg_names[0], "ARB", 4)) {
+      for (u = 0; arg_names[u + 1][0]; u++)
         prog->args[u] = glGetUniformLocationARB (prog->program, arg_names[u + 1]);
     } else {
-      for (u = 0; arg_names[u]; u++)
+      for (u = 0; arg_names[u][0]; u++)
         prog->args[u] = glGetUniformLocation (prog->program, arg_names[u]);
     }
     for (; u < sizeof (prog->args) / sizeof (prog->args[0]); u++)
@@ -578,10 +1001,11 @@ static int opengl2_build_program (opengl2_driver_t *this,
   return 1;
 }
 
-static void opengl2_delete_program( opengl2_program_t *prog )
-{
-  glDeleteProgram( prog->program );
-  glDeleteShader( prog->shader );
+static void opengl2_delete_program (opengl2_program_t *prog) {
+  if (prog->compiled) {
+    glDeleteProgram (prog->program);
+    glDeleteShader (prog->shader);
+  }
 }
 
 static void _config_texture(GLenum target, GLuint texture, GLsizei width, GLsizei height,
@@ -598,29 +1022,44 @@ static void _config_texture(GLenum target, GLuint texture, GLsizei width, GLsize
   }
 }
 
-static int opengl2_check_textures_size (opengl2_driver_t *this_gen, int w, int h, int bytes_per_pixel) {
+#define _OGL2_STATE_OK 1
+#define _OGL2_STATE_CHANGED 2
+
+static uint32_t opengl2_check_textures_size (opengl2_driver_t *this_gen, int w, int h, int bits) {
   opengl2_driver_t *this = this_gen;
   opengl2_yuvtex_t *ytex = &this->yuvtex;
-  int realw = w, uvh, i, type;
+  int bytes_per_pixel = (bits + 7) >> 3;
+  int realw = w, uvh;
 
   w = (w + 15) & ~15;
   /* usually no change. */
   if (!((w ^ ytex->width) | (h ^ ytex->height) | (bytes_per_pixel ^ ytex->bytes_per_pixel)))
-    return 1;
+    return _OGL2_STATE_OK;
   ytex->relw = (float)realw / (float)w;
   ytex->yuy2_mul = w >> 1;
   ytex->yuy2_div = 1.0 / ytex->yuy2_mul;
   ytex->bytes_per_pixel = bytes_per_pixel;
 
-  glDeleteTextures (OGL2_TEX_LAST, ytex->tex);
+  /* changing size most likely invalidates cubic scale temp as well.
+   * reduce gpu memory fragmentation and free that as well here. */
+  glDeleteTextures (OGL2_TEX_CUBIC_TEMP + 1, this->tex);
+  this->tex[OGL2_TEX_CUBIC_TEMP] = 0;
+  this->bicubic.pass1_tex_w = this->bicubic.pass1_tex_h = 0;
 
   xprintf (this->xine, XINE_VERBOSITY_DEBUG,
-    LOG_MODULE ": textures %dx%d %d bpp.\n", w, h, bytes_per_pixel);
+    LOG_MODULE ": textures %dbit %dx%d.\n", bits, w, h);
 
-  if ( !this->videoPBO ) {
-    glGenBuffers( 1, &this->videoPBO );
-    if ( !this->videoPBO )
-      return 0;
+  if (!this->PBO[0]) {
+    uint32_t i;
+
+    glGenBuffers (sizeof (this->PBO) / sizeof (this->PBO[0]), this->PBO);
+    for (i = 0; i < sizeof (this->PBO) / sizeof (this->PBO[0]); i++) {
+      if (!this->PBO[i]) {
+        xprintf (this->xine, XINE_VERBOSITY_LOG,
+          LOG_MODULE ": falied to create pixel buffer objects.\n");
+        return 0;
+      }
+    }
   }
 
   if ( !this->fbo ) {
@@ -629,71 +1068,95 @@ static int opengl2_check_textures_size (opengl2_driver_t *this_gen, int w, int h
       return 0;
   }
 
-  glGenTextures (OGL2_TEX_LAST, ytex->tex);
-  if (!ytex->tex[OGL2_TEX_VIDEO_0] || !ytex->tex[OGL2_TEX_VIDEO_1])
+  glGenTextures (OGL2_TEX_CUBIC_TEMP, this->tex);
+  if (!this->tex[OGL2_TEX_VIDEO_0] || !this->tex[OGL2_TEX_VIDEO_1]) {
+    xprintf (this->xine, XINE_VERBOSITY_LOG,
+      LOG_MODULE ": falied to create video textures.\n");
     return 0;
+  }
 
   uvh = (h + 1) >> 1;
-  type = (bytes_per_pixel <= 1) ? GL_UNSIGNED_BYTE : GL_UNSIGNED_SHORT;
-  _config_texture (GL_TEXTURE_2D, ytex->tex[OGL2_TEX_y],   w,      h,       this->fmt_1p, type, GL_NEAREST);
-  _config_texture (GL_TEXTURE_2D, ytex->tex[OGL2_TEX_u_v], w >> 1, uvh * 2, this->fmt_1p, type, GL_NEAREST);
-  _config_texture (GL_TEXTURE_2D, ytex->tex[OGL2_TEX_u],   w >> 1, uvh,     this->fmt_1p, type, GL_NEAREST);
-  _config_texture (GL_TEXTURE_2D, ytex->tex[OGL2_TEX_v],   w >> 1, uvh,     this->fmt_1p, type, GL_NEAREST);
-  _config_texture (GL_TEXTURE_2D, ytex->tex[OGL2_TEX_yuv], w,      h,       this->fmt_2p, type, GL_NEAREST);
-  _config_texture (GL_TEXTURE_2D, ytex->tex[OGL2_TEX_uv],  w >> 1, uvh,     this->fmt_2p, type, GL_NEAREST);
+  if (bytes_per_pixel <= 1) {
+    _config_texture (GL_TEXTURE_2D, this->tex[OGL2_TEX_y],   w,      h,       this->fmt_1p, GL_UNSIGNED_BYTE, GL_NEAREST);
+    _config_texture (GL_TEXTURE_2D, this->tex[OGL2_TEX_u_v], w >> 1, uvh * 2, this->fmt_1p, GL_UNSIGNED_BYTE, GL_NEAREST);
+    _config_texture (GL_TEXTURE_2D, this->tex[OGL2_TEX_u],   w >> 1, uvh,     this->fmt_1p, GL_UNSIGNED_BYTE, GL_NEAREST);
+    _config_texture (GL_TEXTURE_2D, this->tex[OGL2_TEX_v],   w >> 1, uvh,     this->fmt_1p, GL_UNSIGNED_BYTE, GL_NEAREST);
+  } else {
+    /* TJ. Ums Verrecke net...
+     * I'm sorry.
+     * Not even under death threat...
+     * After hours of trying GL_UNSIGNED_SHORT, GL_LUMINANCE16, GL_R16UI etc, I can tell:
+     * 16bit texture upload is widely unsupported.
+     * The closest thing working is extracting the high bytes.
+     * This extends 10bit deep color to massive 2 bits :-/
+     * And not even this is portable to all of my drivers.
+     * Furthermore, both nvidia and mesa seem to always use RGBA32F when requested
+     * explicitly, or RGBA in all other cases internally. 16bit upload to the former
+     * may work but would waste a lot of gpu mem there.
+     * Lets try and upload as pairs of 8bit, and rejoin later in the shader. */
+    _config_texture (GL_TEXTURE_2D, this->tex[OGL2_TEX_y],   w,      h,       this->fmt_2p, GL_UNSIGNED_BYTE, GL_NEAREST);
+    _config_texture (GL_TEXTURE_2D, this->tex[OGL2_TEX_u_v], w >> 1, uvh * 2, this->fmt_2p, GL_UNSIGNED_BYTE, GL_NEAREST);
+    _config_texture (GL_TEXTURE_2D, this->tex[OGL2_TEX_u],   w >> 1, uvh,     this->fmt_2p, GL_UNSIGNED_BYTE, GL_NEAREST);
+    _config_texture (GL_TEXTURE_2D, this->tex[OGL2_TEX_v],   w >> 1, uvh,     this->fmt_2p, GL_UNSIGNED_BYTE, GL_NEAREST);
+  }
+  _config_texture (GL_TEXTURE_2D, this->tex[OGL2_TEX_yuv], w,      h,       this->fmt_2p, GL_UNSIGNED_BYTE, GL_NEAREST);
+  _config_texture (GL_TEXTURE_2D, this->tex[OGL2_TEX_uv],  w >> 1, uvh,     this->fmt_2p, GL_UNSIGNED_BYTE, GL_NEAREST);
 
   if (this->hw) {
+    uint32_t i;
+
     for (i = 0; i < 3; i++) {
-      _config_texture (GL_TEXTURE_2D, ytex->tex[OGL2_TEX_HW0 + i], 0, 0, 0, 0, GL_NEAREST);
+      _config_texture (GL_TEXTURE_2D, this->tex[OGL2_TEX_HW0 + i], 0, 0, 0, 0, GL_NEAREST);
     }
   }
 
   glBindTexture( GL_TEXTURE_2D, 0 );
 
-  glBindBuffer( GL_PIXEL_UNPACK_BUFFER, this->videoPBO );
-  glBufferData( GL_PIXEL_UNPACK_BUFFER, w * h * 2, NULL, GL_STREAM_DRAW );
-  glBindBuffer( GL_PIXEL_UNPACK_BUFFER, 0 );
+  {
+    uint32_t i;
+
+    for (i = 0; i < OGL2_NUM_VIDEO_PBO; i++) {
+      glBindBuffer (GL_PIXEL_UNPACK_BUFFER, this->PBO[i]);
+      glBufferData (GL_PIXEL_UNPACK_BUFFER, w * uvh * 4, NULL, GL_STREAM_DRAW);
+    }
+    glBindBuffer (GL_PIXEL_UNPACK_BUFFER, 0);
+  }
 
   ytex->width = w;
   ytex->height = h;
 
-  _config_texture (GL_TEXTURE_RECTANGLE_ARB, ytex->tex[OGL2_TEX_VIDEO_0], w, h, GL_RGBA, GL_UNSIGNED_BYTE, GL_LINEAR);
-  _config_texture (GL_TEXTURE_RECTANGLE_ARB, ytex->tex[OGL2_TEX_VIDEO_1], w, h, GL_RGBA, GL_UNSIGNED_BYTE, GL_LINEAR);
-
-  glBindTexture( GL_TEXTURE_RECTANGLE_ARB, 0 );
+  _config_texture (GL_TEXTURE_RECTANGLE_ARB, this->tex[OGL2_TEX_VIDEO_0], w, h, GL_RGBA, GL_UNSIGNED_BYTE, GL_LINEAR);
+  _config_texture (GL_TEXTURE_RECTANGLE_ARB, this->tex[OGL2_TEX_VIDEO_1], w, h, GL_RGBA, GL_UNSIGNED_BYTE, GL_LINEAR);
+  glBindTexture (GL_TEXTURE_RECTANGLE_ARB, 0);
 
   glBindFramebuffer( GL_FRAMEBUFFER, this->fbo );
-  glFramebufferTexture2D( GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_RECTANGLE_ARB, ytex->tex[OGL2_TEX_VIDEO_0], 0 );
-  glFramebufferTexture2D( GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_RECTANGLE_ARB, ytex->tex[OGL2_TEX_VIDEO_1], 0 );
+  glFramebufferTexture2D (GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_RECTANGLE_ARB, this->tex[OGL2_TEX_VIDEO_0], 0);
+  glFramebufferTexture2D (GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_RECTANGLE_ARB, this->tex[OGL2_TEX_VIDEO_1], 0);
   glBindFramebuffer( GL_FRAMEBUFFER, 0 );
 
-  return 1;
+  return _OGL2_STATE_OK | _OGL2_STATE_CHANGED;
 }
 
 
-static void opengl2_upload_overlay(opengl2_driver_t *this, opengl2_overlay_t *o, vo_overlay_t *overlay)
-{
-  if ( o->tex && ((o->tex_w != o->ovl_w) || (o->tex_h != o->ovl_h)) ) {
-    glDeleteTextures( 1, &o->tex );
-    o->tex = 0;
+static void opengl2_upload_overlay (opengl2_driver_t *this, opengl2_overlay_t *o, vo_overlay_t *overlay) {
+  uint32_t ii = o - this->ovl.buf;
+
+  if (this->overlay_tex[ii] && ((o->tex_w != o->ovl_w) || (o->tex_h != o->ovl_h))) {
+    glDeleteTextures (1, this->overlay_tex + ii);
+    this->overlay_tex[ii] = 0;
   }
 
-  if ( !o->tex ) {
-    glGenTextures( 1, &o->tex );
+  if (!this->overlay_tex[ii]) {
+    glGenTextures (1, this->overlay_tex + ii);
     o->tex_w = o->ovl_w;
     o->tex_h = o->ovl_h;
   }
 
-  if ( overlay->rle && !this->overlayPBO ) {
-    glGenBuffers( 1, &this->overlayPBO );
-    if ( !this->overlayPBO ) {
-      xprintf( this->xine, XINE_VERBOSITY_LOG, LOG_MODULE ": overlay PBO failed\n" );
-      return;
-    }
-  }
+  if (overlay->rle && !this->PBO[OGL2_OVERLAY_PBO])
+    return;
 
   glActiveTexture( GL_TEXTURE0 );
-  glBindTexture( GL_TEXTURE_RECTANGLE_ARB, o->tex );
+  glBindTexture (GL_TEXTURE_RECTANGLE_ARB, this->overlay_tex[ii]);
 
   if (overlay->argb_layer) {
     pthread_mutex_lock(&overlay->argb_layer->mutex); /* buffer can be changed or freed while unlocked */
@@ -704,7 +1167,7 @@ static void opengl2_upload_overlay(opengl2_driver_t *this, opengl2_overlay_t *o,
     pthread_mutex_unlock(&overlay->argb_layer->mutex);
 
   } else {
-    glBindBuffer( GL_PIXEL_UNPACK_BUFFER_ARB, this->overlayPBO );
+    glBindBuffer (GL_PIXEL_UNPACK_BUFFER_ARB, this->PBO[OGL2_OVERLAY_PBO]);
     glBufferData( GL_PIXEL_UNPACK_BUFFER_ARB, o->tex_w * o->tex_h * 4, NULL, GL_STREAM_DRAW );
 
     void *rgba = glMapBuffer( GL_PIXEL_UNPACK_BUFFER_ARB, GL_WRITE_ONLY );
@@ -722,46 +1185,49 @@ static void opengl2_upload_overlay(opengl2_driver_t *this, opengl2_overlay_t *o,
   glBindTexture( GL_TEXTURE_RECTANGLE_ARB, 0 );
 }
 
-static void opengl2_overlay_begin (vo_driver_t *this_gen, vo_frame_t *frame_gen, int changed)
-{
-  //fprintf(stderr, "opengl2_overlay_begin\n");
-  (void)frame_gen;
+
+static void opengl2_overlay_blend (vo_driver_t *this_gen, vo_frame_t *frame_gen, vo_overlay_t *overlay) {
   opengl2_driver_t  *this = (opengl2_driver_t *) this_gen;
 
-  if ( changed ) {
-    this->ovl_changed = 1;
-
-    if (!this->gl->make_current(this->gl)) {
-      return;
-    }
-  }
+  this->ovl.blend (this, frame_gen, overlay);
 }
 
+static void _opengl2_overlay_dummy_blend (opengl2_driver_t *this, vo_frame_t *frame_gen, vo_overlay_t *overlay) {
+  (void)this;
+  (void)frame_gen;
+  (void)overlay;
+}
 
-static void opengl2_overlay_blend (vo_driver_t *this_gen, vo_frame_t *frame_gen, vo_overlay_t *overlay)
-{
-  opengl2_driver_t  *this = (opengl2_driver_t *) this_gen;
+static void _opengl2_overlay_blend (opengl2_driver_t *this, vo_frame_t *frame_gen, vo_overlay_t *overlay) {
+  opengl2_overlay_t *ovl;
 
   (void)frame_gen;
-  if ( !this->ovl_changed || this->ovl_changed>XINE_VORAW_MAX_OVL )
+  if (this->ovl.changed >= XINE_VORAW_MAX_OVL) {
+    this->ovl.blend = _opengl2_overlay_dummy_blend;
     return;
+  }
 
   if ( overlay->width<=0 || overlay->height<=0 )
     return;
 
-  opengl2_overlay_t *ovl = &this->overlays[this->ovl_changed-1];
+  ovl = this->ovl.buf + this->ovl.changed;
 
   ovl->ovl_w = overlay->width;
   ovl->ovl_h = overlay->height;
   ovl->ovl_x = overlay->x;
   ovl->ovl_y = overlay->y;
-  ovl->unscaled = overlay->unscaled;
-  ovl->extent_width = overlay->extent_width;
-  ovl->extent_height = overlay->extent_height;
-  if ( overlay->extent_width == -1 )
-    ovl->vid_scale = 1;
-  else
-    ovl->vid_scale = 0;
+  /* prepare fast scaled/unscaled test in opengl2_draw_scaled_overlays ():
+   * not user marked as unscaled and extent unknown or same as video size: scaled. */
+  if ((ovl->unscaled = overlay->unscaled)) {
+    ovl->extent_size.lw = 0;
+    ovl->extent_known.lw = ~0u;
+  } else {
+    ovl->extent_size.w[0] = overlay->extent_width;
+    ovl->extent_size.w[1] = overlay->extent_height;
+    ovl->extent_known.w[0] = ~(((int32_t)overlay->extent_width - 1) >> 31);
+    ovl->extent_known.w[1] = ~(((int32_t)overlay->extent_height - 1) >> 31);
+    ovl->extent_size.lw &= ovl->extent_known.lw;
+  }
 
   if (overlay->rle) {
     if (!overlay->rgb_clut || !overlay->hili_rgb_clut) {
@@ -771,32 +1237,53 @@ static void opengl2_overlay_blend (vo_driver_t *this_gen, vo_frame_t *frame_gen,
 
   if (overlay->argb_layer || overlay->rle) {
     opengl2_upload_overlay(this, ovl, overlay);
-    ++this->ovl_changed;
+    ++this->ovl.changed;
   }
 }
 
 
-static void opengl2_overlay_end (vo_driver_t *this_gen, vo_frame_t *vo_img)
-{
-  //fprintf(stderr, "opengl2_overlay_end\n");
+static void opengl2_overlay_end (vo_driver_t *this_gen, vo_frame_t *vo_img) {
   opengl2_driver_t  *this = (opengl2_driver_t *) this_gen;
-  unsigned i;
+
+  this->ovl.end (this, vo_img);
+}
+  
+static void _opengl2_overlay_dummy_end (opengl2_driver_t *this, vo_frame_t *vo_img) {
+  (void)this;
+  (void)vo_img;
+}
+
+static void _opengl2_overlay_end (opengl2_driver_t *this, vo_frame_t *vo_img) {
+  int i;
 
   (void)vo_img;
-  if ( !this->ovl_changed )
-    return;
-
-  this->num_ovls = this->ovl_changed - 1;
+  this->ovl.num = this->ovl.changed;
 
   /* free unused textures and buffers */
-  for ( i = this->num_ovls; i < XINE_VORAW_MAX_OVL && this->overlays[i].tex; ++i ) {
-    this->overlays[i].ovl_w = 0;
-    this->overlays[i].ovl_h = 0;
-    glDeleteTextures( 1, &this->overlays[i].tex );
-    this->overlays[i].tex = 0;
+  for (i = this->ovl.num; this->overlay_tex[i]; i++)
+    this->ovl.buf[i].ovl_w = this->ovl.buf[i].ovl_h = 0;
+  i -= this->ovl.num;
+  if (i > 0) {
+    glDeleteTextures (i, this->overlay_tex + this->ovl.num);
+    memset (this->overlay_tex + this->ovl.num, 0, i * sizeof (this->overlay_tex[0]));
   }
 
-  this->gl->release_current(this->gl);
+  this->gl->release_current (this->gl);
+
+  this->ovl.changed = 0;
+  this->ovl.blend = _opengl2_overlay_dummy_blend;
+  this->ovl.end   = _opengl2_overlay_dummy_end;
+}
+
+static void opengl2_overlay_begin (vo_driver_t *this_gen, vo_frame_t *frame_gen, int changed) {
+  opengl2_driver_t  *this = (opengl2_driver_t *) this_gen;
+  (void)frame_gen;
+
+  if (changed && this->gl->make_current (this->gl)) {
+    this->ovl.blend = _opengl2_overlay_blend;
+    this->ovl.end   = _opengl2_overlay_end;
+    this->ovl.changed = 0;
+  }
 }
 
 
@@ -809,63 +1296,33 @@ static int opengl2_redraw_needed( vo_driver_t *this_gen )
     _x_vo_scale_compute_output_size( &this->sc );
     return 1;
   }
-  return this->update_csc | this->sharp.changed | this->transform.changed;
+  return this->update_csc | this->gamma.changed | this->sharp.changed | this->transform.changed | this->bicubic.mode_changed;
 }
 
 
 
-static void opengl2_update_csc_matrix (opengl2_driver_t *that, opengl2_frame_t *frame, int input_scale ) {
+static void opengl2_update_csc_matrix (opengl2_driver_t *that, opengl2_frame_t *frame, int bits) {
   int color_standard;
 
   color_standard = cm_from_frame (&frame->vo_frame);
 
-  if ( that->update_csc || that->color_standard != color_standard || that->input_scale != input_scale) {
+  if ( that->update_csc || that->color_standard != color_standard || that->input_bits != bits) {
+    const union {uint32_t w; uint8_t little;} endian_is = {1};
     float hue = (float)that->hue * M_PI / 128.0;
     float saturation = (float)that->saturation / 128.0;
     float contrast = (float)that->contrast / 128.0;
     float brightness = that->brightness;
 
-    cm_fill_matrix(that->csc_matrix, color_standard, hue, saturation, contrast, brightness);
+    cm_fill_matrix (that->csc_matrix, color_standard, hue, saturation, contrast, brightness);
+    that->join16[endian_is.little] = 1u << (16 - bits);
+    that->join16[1 - endian_is.little] = that->join16[endian_is.little] / 256.0;
 
-    /* "upconvert" padded 9...15 bpp to 16bpp by scaling conversion matrix */
-    if (input_scale != 1) {
-      int i;
-      for (i = 0; i < 11; i++)
-        if (i != 3 && i != 7)
-          that->csc_matrix[i] = that->csc_matrix[i] * (float)input_scale;
-    }
     that->color_standard = color_standard;
+    that->input_bits = bits;
     that->update_csc = 0;
-    that->input_scale = input_scale;
 
-    xprintf (that->xine, XINE_VERBOSITY_LOG, LOG_MODULE ": b %d c %d s %d h %d [%s]\n",
-      that->brightness, that->contrast, that->saturation, that->hue, cm_names[color_standard]);
-  }
-}
-
-
-
-static void opengl2_update_overlays( opengl2_driver_t *that )
-{
-  if (that->ovl_changed) {
-    int i;
-
-    that->ovl_vid_scale = 0;
-    for (i = 0; i < that->num_ovls; ++i) {
-      opengl2_overlay_t *o = &that->overlays[i];
-      
-      /* handle DVB subs scaling, e.g. 720x576->1920x1080
-       * FIXME: spu_dvb now always sends extent_width >= 0.
-       * do we need this anymore ?? */
-      if (o->vid_scale) {
-        that->ovl_vid_scale = 1;
-        if ((o->ovl_w > 720) || (o->ovl_h > 576)) {
-          that->ovl_vid_scale = 0;
-          break;
-        }
-      }
-    }
-    that->ovl_changed = 0;
+    xprintf (that->xine, XINE_VERBOSITY_LOG, LOG_MODULE ": b %d c %d s %d h %d [%dbit %s].\n",
+      that->brightness, that->contrast, that->saturation, that->hue, bits, cm_names[color_standard]);
   }
 }
 
@@ -883,70 +1340,97 @@ static void opengl2_rect_set (opengl2_rect_t *r, opengl2_overlay_t *o) {
   r->y2 = r->y1 + o->ovl_h;
 }
 
-static void opengl2_rect_scale (opengl2_rect_t *r, float fx, float fy) {
-  r->x1 *= fx;
-  r->y1 *= fy;
-  r->x2 *= fx;
-  r->y2 *= fy;
-}
 
+static void opengl2_draw_scaled_overlays (opengl2_driver_t *that, opengl2_frame_t *frame) {
+  _opengl2_w2_t framesize;
+  opengl2_overlay_t *o = NULL;
+  int i, us;
+#if 0
+  /* skip high qual hack when there is too much zoom, to keep subs/osd readable. */
+  i  = (int)(that->sc.zoom_factor_x * 160.0) - (int)(0.95 * 160.0);
+  us = (int)(that->sc.zoom_factor_y * 160.0) - (int)(0.95 * 160.0);
+  if ((i | us) & ~15) {
+    for (i = 0; i < that->ovl.num; i++)
+      that->ovl.unscaled_list[i] = i;
+    that->ovl.unscaled_list[i] = 255;
+    return;
+  }
+#endif
+  /* skip padding. */
+  framesize.w[0] = frame->width - frame->vo_frame.crop_right;
+  framesize.w[1] = frame->height - frame->vo_frame.crop_bottom;
 
-static void opengl2_draw_scaled_overlays( opengl2_driver_t *that, opengl2_frame_t *frame )
-{
-  int i;
-
-  glMatrixMode( GL_PROJECTION );
-  glLoadIdentity();
-  glOrtho( 0.0, frame->width, 0.0, frame->height, -1.0, 1.0 );
-
-  glEnable( GL_BLEND );
-
-  that->ovls_drawn = 0;
-  for ( i=0; i<that->num_ovls; ++i ) {
-    opengl2_overlay_t *o = &that->overlays[i];
-    opengl2_rect_t or;
-
-    if ( o->unscaled )
-      continue;
-    /* if extent == video size, blend it here, and make it take part in bicubic scaling.
+  /* look ahaed first. */
+  for (us = 0, i = 0; i < that->ovl.num; i++) {
+    o = that->ovl.buf + i;
+    /* if extent == video size or unknown, blend it here, and make it take part in bicubic scaling.
      * other scaled overlays with known extent:
      * draw overlay over scaled video frame -> more sharpness in overlay. */
-    if ((o->extent_width > 0) && (o->extent_width != frame->width) &&
-        (o->extent_height > 0) && (o->extent_height != frame->height))
-      continue;
-
-    that->ovls_drawn |= 1 << i;
-    opengl2_rect_set (&or, o);
-    if (o->vid_scale && that->ovl_vid_scale) {
-      float fx = frame->width / 720.0, fy = frame->height / 576.0;
-      opengl2_rect_scale (&or, fx, fy);
-    }
-
-    glActiveTexture( GL_TEXTURE0 );
-    glBindTexture( GL_TEXTURE_RECTANGLE_ARB, o->tex );
-
-    glBegin( GL_QUADS );
-      glTexCoord2f( 0, 0 );                  glVertex3f( or.x1, or.y1, 0.);
-      glTexCoord2f( 0, o->tex_h );           glVertex3f( or.x1, or.y2, 0.);
-      glTexCoord2f( o->tex_w, o->tex_h );    glVertex3f( or.x2, or.y2, 0.);
-      glTexCoord2f( o->tex_w, 0 );           glVertex3f( or.x2, or.y1, 0.);
-    glEnd();
+    if (!(o->extent_known.lw & (o->extent_size.lw ^ framesize.lw)))
+      break;
+    that->ovl.unscaled_list[us++] = i;
   }
-  glDisable( GL_BLEND );
+  if (i >= that->ovl.num) {
+    that->ovl.unscaled_list[us] = 255;
+    return;
+  }
+
+  /* ok we have scaled ones. */
+  glMatrixMode (GL_PROJECTION);
+  glLoadIdentity ();
+  glOrtho (0.0, frame->width, 0.0, frame->height, -1.0, 1.0);
+  glEnable (GL_BLEND);
+
+  {
+    opengl2_rect_t or;
+
+    opengl2_rect_set (&or, o);
+
+    glActiveTexture (GL_TEXTURE0);
+    glBindTexture (GL_TEXTURE_RECTANGLE_ARB, that->overlay_tex[o - that->ovl.buf]);
+
+    glBegin (GL_QUADS);
+    glTexCoord2f (0, 0);               glVertex3f (or.x1, or.y1, 0);
+    glTexCoord2f (0, o->tex_h);        glVertex3f (or.x1, or.y2, 0);
+    glTexCoord2f (o->tex_w, o->tex_h); glVertex3f (or.x2, or.y2, 0);
+    glTexCoord2f (o->tex_w, 0);        glVertex3f (or.x2, or.y1, 0);
+    glEnd ();
+  }
+
+  for (i++; i < that->ovl.num; i++) {
+    opengl2_rect_t or;
+
+    o = that->ovl.buf + i;
+    if (o->extent_known.lw & (o->extent_size.lw ^ framesize.lw)) {
+      that->ovl.unscaled_list[us++] = i;
+      continue;
+    }
+    opengl2_rect_set (&or, o);
+
+    glActiveTexture (GL_TEXTURE0);
+    glBindTexture (GL_TEXTURE_RECTANGLE_ARB, that->overlay_tex[o - that->ovl.buf]);
+
+    glBegin (GL_QUADS);
+    glTexCoord2f (0, 0);               glVertex3f (or.x1, or.y1, 0);
+    glTexCoord2f (0, o->tex_h);        glVertex3f (or.x1, or.y2, 0);
+    glTexCoord2f (o->tex_w, o->tex_h); glVertex3f (or.x2, or.y2, 0);
+    glTexCoord2f (o->tex_w, 0);        glVertex3f (or.x2, or.y1, 0);
+    glEnd ();
+  }
+
+  glDisable (GL_BLEND);
+  that->ovl.unscaled_list[us] = 255;
 }
 
 
 static void opengl2_draw_unscaled_overlays( opengl2_driver_t *that )
 {
-  int i;
+  int us;
 
   glEnable( GL_BLEND );
-  for ( i=0; i<that->num_ovls; ++i ) {
-    opengl2_overlay_t *o = &that->overlays[i];
+  for (us = 0; that->ovl.unscaled_list[us] != 255; us++) {
+    opengl2_overlay_t *o = that->ovl.buf + that->ovl.unscaled_list[us];
     vo_scale_map_t map;
-
-    if (that->ovls_drawn & (1 << i))
-      continue;
 
     map.in.x0 = 0;
     map.in.y0 = 0;
@@ -955,8 +1439,8 @@ static void opengl2_draw_unscaled_overlays( opengl2_driver_t *that )
     map.out.x0 = o->ovl_x;
     map.out.y0 = o->ovl_y;
     if (!o->unscaled) {
-      map.out.x1 = o->extent_width;
-      map.out.y1 = o->extent_height;
+      map.out.x1 = o->extent_size.w[0];
+      map.out.y1 = o->extent_size.w[1];
       if (_x_vo_scale_map (&that->sc, &map) != VO_SCALE_MAP_OK)
         continue;
     } else {
@@ -965,8 +1449,7 @@ static void opengl2_draw_unscaled_overlays( opengl2_driver_t *that )
     }
 
     glActiveTexture( GL_TEXTURE0 );
-    glBindTexture( GL_TEXTURE_RECTANGLE_ARB, o->tex );
-
+    glBindTexture (GL_TEXTURE_RECTANGLE_ARB, that->overlay_tex[o - that->ovl.buf]);
     glBegin( GL_QUADS );
       glTexCoord2f (map.in.x0, map.in.y0);    glVertex3f (map.out.x0, map.out.y0, 0.);
       glTexCoord2f (map.in.x0, map.in.y1);    glVertex3f (map.out.x0, map.out.y1, 0.);
@@ -977,38 +1460,34 @@ static void opengl2_draw_unscaled_overlays( opengl2_driver_t *that )
   glDisable( GL_BLEND );
 }
 
+static GLuint opengl2_vtex_swap (opengl2_driver_t *that) {
+  static const uint8_t ti[2] = { OGL2_TEX_VIDEO_0, OGL2_TEX_VIDEO_1 };
+  static const GLuint ca[2] = { GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1 };
+  GLuint old_vtex;
 
-
-static GLuint opengl2_swap_textures( opengl2_driver_t *that, GLuint current_dest )
-{
-  if (current_dest == that->yuvtex.tex[OGL2_TEX_VIDEO_0]) {
-    glDrawBuffer( GL_COLOR_ATTACHMENT1 );
-    return that->yuvtex.tex[OGL2_TEX_VIDEO_1];
-  }
-
-  glDrawBuffer( GL_COLOR_ATTACHMENT0 );
-  return that->yuvtex.tex[OGL2_TEX_VIDEO_0];
+  old_vtex = that->tex[ti[that->vtex.index]];
+  that->vtex.index ^= 1;
+  glDrawBuffer (ca[that->vtex.index]);
+  that->vtex.tex = that->tex[ti[that->vtex.index]];
+  return old_vtex;
 }
 
+static int opengl2_sharpness (opengl2_driver_t *that, opengl2_frame_t *frame) {
+  GLuint vtex;
 
-
-static GLuint opengl2_sharpness( opengl2_driver_t *that, opengl2_frame_t *frame, GLuint video_texture )
-{
-  GLuint ret = video_texture;
-  
   if (!that->sharp.program.compiled) {
     if (!opengl2_build_program (that, &that->sharp.program, blur_sharpen_frag, "blur_sharpen_frag", blur_sharpen_args))
-      return ret;
+      return 0;
   }
 
-  ret = opengl2_swap_textures( that, video_texture );
+  vtex = opengl2_vtex_swap (that);
 
   glMatrixMode( GL_PROJECTION );
   glLoadIdentity();
   glOrtho( 0.0, frame->width, 0.0, frame->height, -1.0, 1.0 );
 
   glActiveTexture( GL_TEXTURE0 );
-  glBindTexture( GL_TEXTURE_RECTANGLE_ARB, video_texture );
+  glBindTexture (GL_TEXTURE_RECTANGLE_ARB, vtex);
 
   glUseProgram (that->sharp.program.program);
   glUniform1i (that->sharp.program.args[0], 0);
@@ -1025,20 +1504,25 @@ static GLuint opengl2_sharpness( opengl2_driver_t *that, opengl2_frame_t *frame,
 
   glUseProgram( 0 );
 
-  return ret;
+  return 1;
 }
 
 
 typedef struct {
   int guiw, guih;
-  int sx1, sx2, sy1, sy2, dx1, dx2, dy1, dy2, dw, dh;
+  int sx1, sx2, sy1, sy2, dx[2], dy[2], dw, dh;
   GLuint video_texture;
 } opengl2_draw_info_t;
 
-static int _opengl2_setup_bicubic (opengl2_driver_t *that, uint32_t flags) {
+static uint32_t _opengl2_setup_bicubic (opengl2_driver_t *that, uint32_t flags) {
+  uint32_t state = _OGL2_STATE_OK;
+
   if (flags & OGL2_BC_LUT) {
-    if (!that->bicubic.lut_texture && !create_lut_texture (that))
-      return 0;
+    if (!that->tex[OGL2_TEX_CUBIC_LUT]) {
+      if (!create_lut_texture (that))
+        return 0;
+      state |= _OGL2_STATE_CHANGED;
+    }
     that->bicubic.flags &= ~OGL2_BC_LUT;
   }
   if (flags & OGL2_BC_PROG_1) {
@@ -1061,27 +1545,30 @@ static int _opengl2_setup_bicubic (opengl2_driver_t *that, uint32_t flags) {
     }
     that->bicubic.flags &= ~OGL2_BC_FBO;
   }
-  return 1;
+  return state;
 }
 
 static inline int opengl2_setup_bicubic (opengl2_driver_t *that, uint32_t flags) {
   flags &= that->bicubic.flags;
   if (!flags)
-    return 1;
+    return _OGL2_STATE_OK;
   return _opengl2_setup_bicubic (that, flags);
 }
 
-static int opengl2_draw_video_bicubic (opengl2_driver_t *that, const opengl2_draw_info_t *info) {
-  if (!opengl2_setup_bicubic (that, OGL2_BC_LUT | OGL2_BC_PROG_1 | OGL2_BC_PROG_2 | OGL2_BC_FBO))
+static uint32_t opengl2_draw_video_bicubic (opengl2_driver_t *that, const opengl2_draw_info_t *info) {
+  uint32_t state = opengl2_setup_bicubic (that, OGL2_BC_LUT | OGL2_BC_PROG_1 | OGL2_BC_PROG_2 | OGL2_BC_FBO);
+
+  if (!state)
     return 0;
 
   if ((that->bicubic.pass1_tex_w ^ info->dw) | (that->bicubic.pass1_tex_h ^ info->dh)) {
-    if (that->bicubic.pass1_texture)
-      glDeleteTextures (1, &that->bicubic.pass1_texture);
-    glGenTextures (1, &that->bicubic.pass1_texture);
-    if (!that->bicubic.pass1_texture)
+    if (that->tex[OGL2_TEX_CUBIC_TEMP])
+      glDeleteTextures (1, &that->tex[OGL2_TEX_CUBIC_TEMP]);
+    glGenTextures (1, &that->tex[OGL2_TEX_CUBIC_TEMP]);
+    if (!that->tex[OGL2_TEX_CUBIC_TEMP])
       return 0;
-    _config_texture (GL_TEXTURE_RECTANGLE_ARB, that->bicubic.pass1_texture,
+    state |= _OGL2_STATE_CHANGED;
+    _config_texture (GL_TEXTURE_RECTANGLE_ARB, that->tex[OGL2_TEX_CUBIC_TEMP],
         info->dw, info->dh, GL_RGBA, GL_UNSIGNED_BYTE, GL_NEAREST);
     glBindTexture (GL_TEXTURE_RECTANGLE_ARB, 0);
     that->bicubic.pass1_tex_w = info->dw;
@@ -1090,7 +1577,7 @@ static int opengl2_draw_video_bicubic (opengl2_driver_t *that, const opengl2_dra
       LOG_MODULE ": bicubic temp texture %dx%d.\n", info->dw, info->dh);
   }
   glBindFramebuffer (GL_FRAMEBUFFER, that->bicubic.fbo);
-  glFramebufferTexture2D (GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_RECTANGLE_ARB, that->bicubic.pass1_texture, 0);
+  glFramebufferTexture2D (GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_RECTANGLE_ARB, that->tex[OGL2_TEX_CUBIC_TEMP], 0);
 
   glViewport (0, 0, info->dw, info->dh);
   glMatrixMode (GL_PROJECTION);
@@ -1104,11 +1591,11 @@ static int opengl2_draw_video_bicubic (opengl2_driver_t *that, const opengl2_dra
   glTexParameteri (GL_TEXTURE_RECTANGLE_ARB, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
   glTexParameteri (GL_TEXTURE_RECTANGLE_ARB, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
   glActiveTexture (GL_TEXTURE1);
-  glBindTexture (GL_TEXTURE_RECTANGLE_ARB, that->bicubic.lut_texture);
+  glBindTexture (GL_TEXTURE_RECTANGLE_ARB, that->tex[OGL2_TEX_CUBIC_LUT]);
   glUseProgram (that->bicubic.pass1_program.program);
   glUniform1i (that->bicubic.pass1_program.args[0], 0);
   glUniform1i (that->bicubic.pass1_program.args[1], 1);
-  glUniform1f (that->bicubic.pass1_program.args[2], CATMULLROM_SPLINE);
+  glUniform1f (that->bicubic.pass1_program.args[2], that->bicubic.lut_y);
 
   glBegin (GL_QUADS);
     glTexCoord2f (info->sx1, info->sy1); glVertex3f (       0,        0, 0);
@@ -1130,28 +1617,30 @@ static int opengl2_draw_video_bicubic (opengl2_driver_t *that, const opengl2_dra
   glClear (GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
   glActiveTexture (GL_TEXTURE0);
-  glBindTexture (GL_TEXTURE_RECTANGLE_ARB, that->bicubic.pass1_texture);
+  glBindTexture (GL_TEXTURE_RECTANGLE_ARB, that->tex[OGL2_TEX_CUBIC_TEMP]);
   glActiveTexture (GL_TEXTURE1);
-  glBindTexture (GL_TEXTURE_RECTANGLE_ARB, that->bicubic.lut_texture);
+  glBindTexture (GL_TEXTURE_RECTANGLE_ARB, that->tex[OGL2_TEX_CUBIC_LUT]);
   glUseProgram (that->bicubic.pass2_program.program);
   glUniform1i (that->bicubic.pass2_program.args[0], 0);
   glUniform1i (that->bicubic.pass2_program.args[1], 1);
-  glUniform1f (that->bicubic.pass2_program.args[2], CATMULLROM_SPLINE);
+  glUniform1f (that->bicubic.pass2_program.args[2], that->bicubic.lut_y);
 
   glBegin (GL_QUADS);
-    glTexCoord2f (       0,        0); glVertex3f (info->dx1, info->dy1, 0);
-    glTexCoord2f (       0, info->dh); glVertex3f (info->dx1, info->dy2, 0);
-    glTexCoord2f (info->dw, info->dh); glVertex3f (info->dx2, info->dy2, 0);
-    glTexCoord2f (info->dw,        0); glVertex3f (info->dx2, info->dy1, 0);
+    glTexCoord2f (       0,        0); glVertex3f (info->dx[0], info->dy[0], 0);
+    glTexCoord2f (       0, info->dh); glVertex3f (info->dx[0], info->dy[1], 0);
+    glTexCoord2f (info->dw, info->dh); glVertex3f (info->dx[1], info->dy[1], 0);
+    glTexCoord2f (info->dw,        0); glVertex3f (info->dx[1], info->dy[0], 0);
   glEnd ();
 
   glUseProgram (0);
 
-  return 1;
+  return state;
 }
 
-static int opengl2_draw_video_cubic_x (opengl2_driver_t *that, const opengl2_draw_info_t *info) {
-  if (!opengl2_setup_bicubic (that, OGL2_BC_LUT | OGL2_BC_PROG_1))
+static uint32_t opengl2_draw_video_cubic_x (opengl2_driver_t *that, const opengl2_draw_info_t *info) {
+  uint32_t state = opengl2_setup_bicubic (that, OGL2_BC_LUT | OGL2_BC_PROG_1);
+
+  if (!state)
     return 0;
 
   glViewport (0, 0, info->guiw, info->guih);
@@ -1168,26 +1657,28 @@ static int opengl2_draw_video_cubic_x (opengl2_driver_t *that, const opengl2_dra
   glTexParameteri (GL_TEXTURE_RECTANGLE_ARB, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
   glTexParameteri (GL_TEXTURE_RECTANGLE_ARB, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
   glActiveTexture (GL_TEXTURE1);
-  glBindTexture (GL_TEXTURE_RECTANGLE_ARB, that->bicubic.lut_texture);
+  glBindTexture (GL_TEXTURE_RECTANGLE_ARB, that->tex[OGL2_TEX_CUBIC_LUT]);
   glUseProgram (that->bicubic.pass1_program.program);
   glUniform1i (that->bicubic.pass1_program.args[0], 0);
   glUniform1i (that->bicubic.pass1_program.args[1], 1);
-  glUniform1f (that->bicubic.pass1_program.args[2], CATMULLROM_SPLINE);
+  glUniform1f (that->bicubic.pass1_program.args[2], that->bicubic.lut_y);
 
   glBegin (GL_QUADS);
-    glTexCoord2f (info->sx1, info->sy1); glVertex3f (info->dx1, info->dy1, 0);
-    glTexCoord2f (info->sx1, info->sy2); glVertex3f (info->dx1, info->dy2, 0);
-    glTexCoord2f (info->sx2, info->sy2); glVertex3f (info->dx2, info->dy2, 0);
-    glTexCoord2f (info->sx2, info->sy1); glVertex3f (info->dx2, info->dy1, 0);
+    glTexCoord2f (info->sx1, info->sy1); glVertex3f (info->dx[0], info->dy[0], 0);
+    glTexCoord2f (info->sx1, info->sy2); glVertex3f (info->dx[0], info->dy[1], 0);
+    glTexCoord2f (info->sx2, info->sy2); glVertex3f (info->dx[1], info->dy[1], 0);
+    glTexCoord2f (info->sx2, info->sy1); glVertex3f (info->dx[1], info->dy[0], 0);
   glEnd ();
 
   glUseProgram (0);
 
-  return 1;
+  return state;
 }
 
-static int opengl2_draw_video_cubic_y (opengl2_driver_t *that, const opengl2_draw_info_t *info) {
-  if (!opengl2_setup_bicubic (that, OGL2_BC_LUT | OGL2_BC_PROG_2))
+static uint32_t opengl2_draw_video_cubic_y (opengl2_driver_t *that, const opengl2_draw_info_t *info) {
+  uint32_t state = opengl2_setup_bicubic (that, OGL2_BC_LUT | OGL2_BC_PROG_2);
+
+  if (!state)
     return 0;
 
   glViewport (0, 0, info->guiw, info->guih);
@@ -1204,22 +1695,22 @@ static int opengl2_draw_video_cubic_y (opengl2_driver_t *that, const opengl2_dra
   glTexParameteri (GL_TEXTURE_RECTANGLE_ARB, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
   glTexParameteri (GL_TEXTURE_RECTANGLE_ARB, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
   glActiveTexture (GL_TEXTURE1);
-  glBindTexture (GL_TEXTURE_RECTANGLE_ARB, that->bicubic.lut_texture);
+  glBindTexture (GL_TEXTURE_RECTANGLE_ARB, that->tex[OGL2_TEX_CUBIC_LUT]);
   glUseProgram (that->bicubic.pass2_program.program);
   glUniform1i (that->bicubic.pass2_program.args[0], 0);
   glUniform1i (that->bicubic.pass2_program.args[1], 1);
-  glUniform1f (that->bicubic.pass2_program.args[2], CATMULLROM_SPLINE);
+  glUniform1f (that->bicubic.pass2_program.args[2], that->bicubic.lut_y);
 
   glBegin (GL_QUADS);
-    glTexCoord2f (info->sx1, info->sy1); glVertex3f (info->dx1, info->dy1, 0);
-    glTexCoord2f (info->sx1, info->sy2); glVertex3f (info->dx1, info->dy2, 0);
-    glTexCoord2f (info->sx2, info->sy2); glVertex3f (info->dx2, info->dy2, 0);
-    glTexCoord2f (info->sx2, info->sy1); glVertex3f (info->dx2, info->dy1, 0);
+    glTexCoord2f (info->sx1, info->sy1); glVertex3f (info->dx[0], info->dy[0], 0);
+    glTexCoord2f (info->sx1, info->sy2); glVertex3f (info->dx[0], info->dy[1], 0);
+    glTexCoord2f (info->sx2, info->sy2); glVertex3f (info->dx[1], info->dy[1], 0);
+    glTexCoord2f (info->sx2, info->sy1); glVertex3f (info->dx[1], info->dy[0], 0);
   glEnd ();
 
   glUseProgram (0);
 
-  return 1;
+  return state;
 }
 
 static int opengl2_draw_video_simple (opengl2_driver_t *that, const opengl2_draw_info_t *info) {
@@ -1240,16 +1731,16 @@ static int opengl2_draw_video_simple (opengl2_driver_t *that, const opengl2_draw
   glTexParameteri (GL_TEXTURE_RECTANGLE_ARB, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
 
   glBegin (GL_QUADS);
-    glTexCoord2f (info->sx1, info->sy1); glVertex3f (info->dx1, info->dy1, 0);
-    glTexCoord2f (info->sx1, info->sy2); glVertex3f (info->dx1, info->dy2, 0);
-    glTexCoord2f (info->sx2, info->sy2); glVertex3f (info->dx2, info->dy2, 0);
-    glTexCoord2f (info->sx2, info->sy1); glVertex3f (info->dx2, info->dy1, 0);
+    glTexCoord2f (info->sx1, info->sy1); glVertex3f (info->dx[0], info->dy[0], 0);
+    glTexCoord2f (info->sx1, info->sy2); glVertex3f (info->dx[0], info->dy[1], 0);
+    glTexCoord2f (info->sx2, info->sy2); glVertex3f (info->dx[1], info->dy[1], 0);
+    glTexCoord2f (info->sx2, info->sy1); glVertex3f (info->dx[1], info->dy[0], 0);
   glEnd ();
 
-  return 1;
+  return _OGL2_STATE_OK;
 }
 
-static void opengl2_draw_video_bilinear (opengl2_driver_t *that, const opengl2_draw_info_t *info) {
+static uint32_t opengl2_draw_video_bilinear (opengl2_driver_t *that, const opengl2_draw_info_t *info) {
   (void)that;
 
   glViewport (0, 0, info->guiw, info->guih);
@@ -1267,139 +1758,237 @@ static void opengl2_draw_video_bilinear (opengl2_driver_t *that, const opengl2_d
   glTexParameteri (GL_TEXTURE_RECTANGLE_ARB, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
 
   glBegin (GL_QUADS);
-    glTexCoord2f (info->sx1, info->sy1); glVertex3f (info->dx1, info->dy1, 0);
-    glTexCoord2f (info->sx1, info->sy2); glVertex3f (info->dx1, info->dy2, 0);
-    glTexCoord2f (info->sx2, info->sy2); glVertex3f (info->dx2, info->dy2, 0);
-    glTexCoord2f (info->sx2, info->sy1); glVertex3f (info->dx2, info->dy1, 0);
+    glTexCoord2f (info->sx1, info->sy1); glVertex3f (info->dx[0], info->dy[0], 0);
+    glTexCoord2f (info->sx1, info->sy2); glVertex3f (info->dx[0], info->dy[1], 0);
+    glTexCoord2f (info->sx2, info->sy2); glVertex3f (info->dx[1], info->dy[1], 0);
+    glTexCoord2f (info->sx2, info->sy1); glVertex3f (info->dx[1], info->dy[0], 0);
   glEnd ();
+
+  return _OGL2_STATE_OK;
 }
 
-static void _upload_texture(GLenum target, GLuint tex, GLenum format, GLenum type,
-                            void *data, unsigned pitch, GLuint bpp, GLuint height, GLuint pbo)
-{
+static void _upload_texture (GLenum target, GLuint tex, GLenum format, GLenum type,
+  const void *data, unsigned pitch, GLuint bpp, GLuint height, GLuint pbo) {
   GLenum pbo_target = (target == GL_TEXTURE_2D ? GL_PIXEL_UNPACK_BUFFER : GL_PIXEL_UNPACK_BUFFER_ARB);
-  void *mem;
-  glBindBuffer (pbo_target, pbo);
-  glBindTexture (target, tex);
-  mem = glMapBuffer (pbo_target, GL_WRITE_ONLY);
-  xine_fast_memcpy (mem, data, pitch * height);
-  glUnmapBuffer (pbo_target);
-  glTexSubImage2D (target, 0, 0, 0, pitch / bpp, height, format, type, 0);
-  glBindBuffer (pbo_target, 0);
-}
 
-static GLuint opengl2_use_csc (opengl2_driver_t *that, opengl2_csc_shader_t what) {
-  GLuint n;
-  if (what != that->last_csc_shader) {
-    that->last_csc_shader = what;
-    xprintf (that->xine, XINE_VERBOSITY_DEBUG,
-      LOG_MODULE ": using csc shader %s.\n", that->csc_shaders[what].name);
+  {
+    void *mem;
+    /* glPixelTransferi (GL_UNPACK_SWAP_BYTES, GL_TRUE); */
+    glBindBuffer (pbo_target, pbo);
+    glBindTexture (target, tex);
+    mem = glMapBuffer (pbo_target, GL_WRITE_ONLY);
+    xine_fast_memcpy (mem, data, pitch * height);
+    glUnmapBuffer (pbo_target);
+    glTexSubImage2D (target, 0, 0, 0, pitch / bpp, height, format, type, NULL);
+    glBindBuffer (pbo_target, 0);
   }
-  n = that->csc_shaders[what].program;
-  glUseProgram (n);
-  glUniform4f (that->csc_shaders[what].args[0],
-    that->csc_matrix[0], that->csc_matrix[1], that->csc_matrix[2], that->csc_matrix[3]);
-  glUniform4f (that->csc_shaders[what].args[1],
-    that->csc_matrix[4], that->csc_matrix[5], that->csc_matrix[6], that->csc_matrix[7]);
-  glUniform4f (that->csc_shaders[what].args[2],
-    that->csc_matrix[8], that->csc_matrix[9], that->csc_matrix[10], that->csc_matrix[11]);
-  return n;
 }
 
-static void opengl2_draw( opengl2_driver_t *that, opengl2_frame_t *frame )
-{
+typedef enum {
+  OGL2_FT_UNKNOWN = 0,
+  OGL2_FT_YV12,
+  OGL2_FT_YV12_DEEP,
+  OGL2_FT_NV12,
+  OGL2_FT_YUY2,
+  OGL2_FT_HW_UNKNOWN,
+  OGL2_FT_HW_YV12,
+  OGL2_FT_HW_YV12_DEEP,
+  OGL2_FT_HW_NV12,
+  OGL2_FT_HW_YUY2,
+  OGL2_FT_LAST
+} _ogl2_ft_t;
+#define OGL2_FT_MASK 15
+
+static uint32_t opengl2_get_ft (uint32_t type) {
+  uint32_t _type, ret = 0;
+  /* NOTE: correct [u]int32_t use needed for gcc 7 autovectorization. */
+  _type = (type & 0x7fffffff) ^ (XINE_IMGFMT_YV12 ^ 0x7fffffff);
+  ret += ((int32_t)(_type + 1) >> 31) & (uint32_t)OGL2_FT_YV12;
+  _type ^= XINE_IMGFMT_YV12 ^ XINE_IMGFMT_YV12_DEEP;
+  ret += ((int32_t)(_type + 1) >> 31) & (uint32_t)OGL2_FT_YV12_DEEP;
+  _type ^= XINE_IMGFMT_YV12_DEEP ^ XINE_IMGFMT_NV12;
+  ret += ((int32_t)(_type + 1) >> 31) & (uint32_t)OGL2_FT_NV12;
+  _type ^= XINE_IMGFMT_NV12 ^ XINE_IMGFMT_YUY2;
+  ret += ((int32_t)(_type + 1) >> 31) & (uint32_t)OGL2_FT_YUY2;
+  return ret;
+}
+
+static int opengl2_draw (opengl2_driver_t *that, opengl2_frame_t *frame) {
   int bits = (frame->vo_frame.format == XINE_IMGFMT_YV12_DEEP) ? VO_GET_FLAGS_DEPTH(frame->vo_frame.flags) : 8;
-  int bpp = (bits + 7) >> 3;
-  unsigned int sw_format = frame->format;
-  int uvh = 0;
+  int bpp = (bits + 7) >> 3, uvh = 0;
+  uint32_t ft, state;
+  opengl2_csc_shader_t shader;
 
-  if (!that->gl->make_current(that->gl)) {
-    return;
+  if (!that->gl->make_current (that->gl))
+    return 0;
+
+  state = opengl2_check_textures_size (that, frame->width, frame->height, bits);
+  if (!state) {
+    that->gl->release_current (that->gl);
+    return 0;
   }
 
-  if (!opengl2_check_textures_size (that, frame->width, frame->height, bpp)) {
-    that->gl->release_current(that->gl);
-    return;
-  }
-
-  opengl2_update_csc_matrix( that, frame, bits > 8 ? ((1<<(16-bits))) : 1 );
+  opengl2_update_csc_matrix (that, frame, bits);
 
   glBindFramebuffer( GL_FRAMEBUFFER, that->fbo );
 
-  if (that->hw && frame->format == that->hw->frame_format) {
-    unsigned tex, num_texture;
-    that->glconv->get_textures(that->glconv, &frame->vo_frame, GL_TEXTURE_2D,
-                               &that->yuvtex.tex[OGL2_TEX_HW0], &num_texture, &sw_format);
-    for (tex = 0; tex < num_texture; tex++) {
-      glActiveTexture (GL_TEXTURE0 + tex);
-      glBindTexture (GL_TEXTURE_2D, that->yuvtex.tex[OGL2_TEX_HW0 + tex]);
+  {
+    unsigned int sw_format = frame->format;
+    ft = OGL2_FT_UNKNOWN;
+    if (that->hw && (frame->format == that->hw->frame_format)) {
+      unsigned int tex, num_texture = 0;
+      ft = OGL2_FT_HW_UNKNOWN;
+      that->glconv->get_textures (that->glconv, &frame->vo_frame, GL_TEXTURE_2D,
+        &that->tex[OGL2_TEX_HW0], &num_texture, &sw_format);
+      /* XXX: does a hardware decoder use our joined YV12 hack? */
+      uvh = !(num_texture - 2);
+      for (tex = 0; tex < num_texture; tex++) {
+        glActiveTexture (GL_TEXTURE0 + tex);
+        glBindTexture (GL_TEXTURE_2D, that->tex[OGL2_TEX_HW0 + tex]);
+      }
     }
+    ft += opengl2_get_ft (sw_format);
   }
-  else if (frame->format == XINE_IMGFMT_YV12 ||
-           frame->format == XINE_IMGFMT_YV12_DEEP) {
-    int type = (frame->format == XINE_IMGFMT_YV12) ? GL_UNSIGNED_BYTE : GL_UNSIGNED_SHORT;
-    uvh = (frame->height + 1) >> 1;
-    sw_format = XINE_IMGFMT_YV12;
-    if ((frame->vo_frame.pitches[1] == frame->vo_frame.pitches[2])
-      && (frame->vo_frame.base[1] + frame->vo_frame.pitches[1] * uvh == frame->vo_frame.base[2])) {
+
+  shader = that->last_csc_shader;
+  /* make gcc avoid range check code. */
+  switch (ft & OGL2_FT_MASK) {
+    case OGL2_FT_YV12:
+      uvh = (frame->height + 1) >> 1;
       glActiveTexture (GL_TEXTURE0);
-      _upload_texture (GL_TEXTURE_2D, that->yuvtex.tex[OGL2_TEX_y], that->fmt_1p, type,
-        frame->vo_frame.base[0], frame->vo_frame.pitches[0], bpp, frame->height, that->videoPBO);
+      _upload_texture (GL_TEXTURE_2D, that->tex[OGL2_TEX_y], that->fmt_1p, GL_UNSIGNED_BYTE,
+        frame->vo_frame.base[0], frame->vo_frame.pitches[0], bpp, frame->height, _opengl2_next_videoPBO (that));
       glActiveTexture (GL_TEXTURE1);
-      _upload_texture (GL_TEXTURE_2D, that->yuvtex.tex[OGL2_TEX_u_v], that->fmt_1p, type,
-        frame->vo_frame.base[1], frame->vo_frame.pitches[1], bpp, uvh * 2, that->videoPBO);
-    } else {
+      /* should always be true. yuv420[g]_frag is still needed for YV12 hardware decoders. */
+      if (!(((uintptr_t)frame->vo_frame.pitches[1] ^ (uintptr_t)frame->vo_frame.pitches[2])
+        | ((uintptr_t)(frame->vo_frame.base[1] + frame->vo_frame.pitches[1] * uvh) ^ (uintptr_t)frame->vo_frame.base[2]))) {
+        _upload_texture (GL_TEXTURE_2D, that->tex[OGL2_TEX_u_v], that->fmt_1p, GL_UNSIGNED_BYTE,
+          frame->vo_frame.base[1], frame->vo_frame.pitches[1], bpp, uvh * 2, _opengl2_next_videoPBO (that));
+        /* help gcc jump target optimization. */
+        uvh = 1;
+      } else {
+        _upload_texture (GL_TEXTURE_2D, that->tex[OGL2_TEX_u], that->fmt_1p, GL_UNSIGNED_BYTE,
+          frame->vo_frame.base[1], frame->vo_frame.pitches[1], bpp, uvh, _opengl2_next_videoPBO (that));
+        glActiveTexture (GL_TEXTURE2);
+        _upload_texture (GL_TEXTURE_2D, that->tex[OGL2_TEX_v], that->fmt_1p, GL_UNSIGNED_BYTE,
+          frame->vo_frame.base[2], frame->vo_frame.pitches[2], bpp, uvh, _opengl2_next_videoPBO (that));
+        uvh = 0;
+      }
+      /* fall through */
+    case OGL2_FT_HW_YV12:
+      if (uvh) {
+        if (that->gamma.value & that->csc_shaders[OGL2_cscs_yuv420jg].compiled) {
+          glUseProgram (that->csc_shaders[shader = OGL2_cscs_yuv420jg].program);
+          glUniform1i (that->csc_shaders[OGL2_cscs_yuv420jg].args[4], 1);
+          glUniform4f (that->csc_shaders[OGL2_cscs_yuv420jg].args[5],
+            that->gamma.gamma2, that->gamma.gamma2, that->gamma.gamma2, 0.0);
+          glUniform4f (that->csc_shaders[OGL2_cscs_yuv420jg].args[6],
+            that->gamma.gamma1, that->gamma.gamma1, that->gamma.gamma1, 1.0);
+        } else {
+          glUseProgram (that->csc_shaders[shader = OGL2_cscs_yuv420j].program);
+          glUniform1i (that->csc_shaders[OGL2_cscs_yuv420j].args[4], 1);
+        }
+      } else {
+        if (that->gamma.value & that->csc_shaders[OGL2_cscs_yuv420g].compiled) {
+          glUseProgram (that->csc_shaders[shader = OGL2_cscs_yuv420g].program);
+          glUniform1i (that->csc_shaders[OGL2_cscs_yuv420g].args[4], 1);
+          glUniform1i (that->csc_shaders[OGL2_cscs_yuv420g].args[5], 2);
+          glUniform4f (that->csc_shaders[OGL2_cscs_yuv420g].args[6],
+            that->gamma.gamma2, that->gamma.gamma2, that->gamma.gamma2, 0.0);
+          glUniform4f (that->csc_shaders[OGL2_cscs_yuv420g].args[7],
+            that->gamma.gamma1, that->gamma.gamma1, that->gamma.gamma1, 1.0);
+        } else {
+          glUseProgram (that->csc_shaders[shader = OGL2_cscs_yuv420].program);
+          glUniform1i (that->csc_shaders[OGL2_cscs_yuv420].args[4], 1);
+          glUniform1i (that->csc_shaders[OGL2_cscs_yuv420].args[5], 2);
+        }
+      }
+      break;
+
+    case OGL2_FT_YV12_DEEP:
+      uvh = (frame->height + 1) >> 1;
       glActiveTexture (GL_TEXTURE0);
-      _upload_texture (GL_TEXTURE_2D, that->yuvtex.tex[OGL2_TEX_y], that->fmt_1p, type,
-        frame->vo_frame.base[0], frame->vo_frame.pitches[0], bpp, frame->height, that->videoPBO);
+      _upload_texture (GL_TEXTURE_2D, that->tex[OGL2_TEX_y], that->fmt_2p, GL_UNSIGNED_BYTE,
+        frame->vo_frame.base[0], frame->vo_frame.pitches[0], bpp, frame->height, _opengl2_next_videoPBO (that));
       glActiveTexture (GL_TEXTURE1);
-      _upload_texture (GL_TEXTURE_2D, that->yuvtex.tex[OGL2_TEX_u], that->fmt_1p, type,
-        frame->vo_frame.base[1], frame->vo_frame.pitches[1], bpp, uvh, that->videoPBO);
-      glActiveTexture (GL_TEXTURE2);
-      _upload_texture (GL_TEXTURE_2D, that->yuvtex.tex[OGL2_TEX_v], that->fmt_1p, type,
-        frame->vo_frame.base[2], frame->vo_frame.pitches[2], bpp, uvh, that->videoPBO);
-      uvh = 0;
-    }
-  }
-  else if (frame->format == XINE_IMGFMT_NV12) {
+      _upload_texture (GL_TEXTURE_2D, that->tex[OGL2_TEX_u_v], that->fmt_2p, GL_UNSIGNED_BYTE,
+        frame->vo_frame.base[1], frame->vo_frame.pitches[1], bpp, uvh * 2, _opengl2_next_videoPBO (that));
+      /* fall through */
+    case OGL2_FT_HW_YV12_DEEP:
+      if (that->gamma.value & that->csc_shaders[OGL2_cscs_yuv420j16g].compiled) {
+        glUseProgram (that->csc_shaders[shader = OGL2_cscs_yuv420j16g].program);
+        glUniform1i (that->csc_shaders[OGL2_cscs_yuv420j16g].args[4], 1);
+        glUniform2f (that->csc_shaders[OGL2_cscs_yuv420j16g].args[5], that->join16[0], that->join16[1]);
+        glUniform4f (that->csc_shaders[OGL2_cscs_yuv420j16g].args[6],
+          that->gamma.gamma2, that->gamma.gamma2, that->gamma.gamma2, 0.0);
+        glUniform4f (that->csc_shaders[OGL2_cscs_yuv420j16g].args[7],
+          that->gamma.gamma1, that->gamma.gamma1, that->gamma.gamma1, 1.0);
+      } else {
+        glUseProgram (that->csc_shaders[shader = OGL2_cscs_yuv420j16].program);
+        glUniform1i (that->csc_shaders[OGL2_cscs_yuv420j16].args[4], 1);
+        glUniform2f (that->csc_shaders[OGL2_cscs_yuv420j16].args[5], that->join16[0], that->join16[1]);
+      }
+      break;
 
-    glActiveTexture (GL_TEXTURE0);
-    _upload_texture(GL_TEXTURE_2D, that->yuvtex.tex[OGL2_TEX_y], that->fmt_1p, GL_UNSIGNED_BYTE,
-                    frame->vo_frame.base[0], frame->vo_frame.pitches[0], 1, frame->height, that->videoPBO);
+    case OGL2_FT_NV12:
+      glActiveTexture (GL_TEXTURE0);
+      _upload_texture(GL_TEXTURE_2D, that->tex[OGL2_TEX_y], that->fmt_1p, GL_UNSIGNED_BYTE,
+        frame->vo_frame.base[0], frame->vo_frame.pitches[0], 1, frame->height, _opengl2_next_videoPBO (that));
+      glActiveTexture (GL_TEXTURE1);
+      _upload_texture(GL_TEXTURE_2D, that->tex[OGL2_TEX_uv], that->fmt_2p, GL_UNSIGNED_BYTE,
+        frame->vo_frame.base[1], frame->vo_frame.pitches[1], 2, (frame->height + 1) >> 1, _opengl2_next_videoPBO (that));
+      /* fall through */
+    case OGL2_FT_HW_NV12:
+      if (that->gamma.value & that->csc_shaders[OGL2_cscs_nv12g].compiled) {
+        glUseProgram (that->csc_shaders[shader = OGL2_cscs_nv12g].program);
+        glUniform1i (that->csc_shaders[OGL2_cscs_nv12g].args[4], 1);
+        glUniform4f (that->csc_shaders[OGL2_cscs_nv12g].args[5],
+          that->gamma.gamma2, that->gamma.gamma2, that->gamma.gamma2, 0.0);
+        glUniform4f (that->csc_shaders[OGL2_cscs_nv12g].args[6],
+          that->gamma.gamma1, that->gamma.gamma1, that->gamma.gamma1, 1.0);
+      } else {
+        glUseProgram (that->csc_shaders[shader = OGL2_cscs_nv12].program);
+        glUniform1i (that->csc_shaders[OGL2_cscs_nv12].args[4], 1);
+      }
+      break;
 
-    glActiveTexture (GL_TEXTURE1);
-    _upload_texture(GL_TEXTURE_2D, that->yuvtex.tex[OGL2_TEX_uv], that->fmt_2p, GL_UNSIGNED_BYTE,
-                    frame->vo_frame.base[1], frame->vo_frame.pitches[1], 2, (frame->height+1)/2, that->videoPBO);
+    case OGL2_FT_YUY2:
+      glActiveTexture (GL_TEXTURE0);
+      _upload_texture(GL_TEXTURE_2D, that->tex[OGL2_TEX_yuv], that->fmt_2p, GL_UNSIGNED_BYTE,
+        frame->vo_frame.base[0], frame->vo_frame.pitches[0], 2, frame->height, _opengl2_next_videoPBO (that));
+      /* fall through */
+    case OGL2_FT_HW_YUY2:
+      if (that->gamma.value & that->csc_shaders[OGL2_cscs_yuv422g].compiled) {
+        glUseProgram (that->csc_shaders[shader = OGL2_cscs_yuv422g].program);
+        glUniform2f (that->csc_shaders[OGL2_cscs_yuv422g].args[4], that->yuvtex.yuy2_mul, that->yuvtex.yuy2_div);
+        glUniform4f (that->csc_shaders[OGL2_cscs_yuv422g].args[5],
+          that->gamma.gamma2, that->gamma.gamma2, that->gamma.gamma2, 0.0);
+        glUniform4f (that->csc_shaders[OGL2_cscs_yuv422g].args[6],
+          that->gamma.gamma1, that->gamma.gamma1, that->gamma.gamma1, 1.0);
+      } else {
+        glUseProgram (that->csc_shaders[shader = OGL2_cscs_yuv422].program);
+        glUniform2f (that->csc_shaders[OGL2_cscs_yuv422].args[4], that->yuvtex.yuy2_mul, that->yuvtex.yuy2_div);
+      }
+      break;
+
+    default:
+      /* unknown format */
+      xprintf (that->xine, XINE_VERBOSITY_LOG, LOG_MODULE ": unknown image format 0x%08x.\n", frame->format);
+      return 0;
   }
-  else if ( frame->format == XINE_IMGFMT_YUY2 ) {
-    glActiveTexture( GL_TEXTURE0 );
-    _upload_texture(GL_TEXTURE_2D, that->yuvtex.tex[OGL2_TEX_yuv], that->fmt_2p, GL_UNSIGNED_BYTE,
-                    frame->vo_frame.base[0], frame->vo_frame.pitches[0], 2, frame->height, that->videoPBO);
-  }
-  else {
-    /* unknown format */
-    xprintf( that->xine, XINE_VERBOSITY_LOG, LOG_MODULE ": unknown image format 0x%08x\n", frame->format );
+  if (shader != that->last_csc_shader) {
+    that->last_csc_shader = shader;
+    xprintf (that->xine, XINE_VERBOSITY_DEBUG,
+      LOG_MODULE ": using csc shader %s.\n", that->csc_shaders[shader].name);
   }
 
-  if (sw_format == XINE_IMGFMT_YV12) {
-    if (uvh) {
-      opengl2_use_csc (that, OGL2_cscs_yuv420j);
-      glUniform1i (that->csc_shaders[OGL2_cscs_yuv420j].args[3], 0);
-      glUniform1i (that->csc_shaders[OGL2_cscs_yuv420j].args[4], 1);
-    } else {
-      opengl2_use_csc (that, OGL2_cscs_yuv420);
-      glUniform1i (that->csc_shaders[OGL2_cscs_yuv420].args[3], 0);
-      glUniform1i (that->csc_shaders[OGL2_cscs_yuv420].args[4], 1);
-      glUniform1i (that->csc_shaders[OGL2_cscs_yuv420].args[5], 2);
-    }
-  } else if (sw_format == XINE_IMGFMT_NV12) {
-    opengl2_use_csc (that, OGL2_cscs_nv12);
-    glUniform1i (that->csc_shaders[OGL2_cscs_nv12].args[3], 0);
-    glUniform1i (that->csc_shaders[OGL2_cscs_nv12].args[4], 1);
-  } else if (sw_format == XINE_IMGFMT_YUY2) {
-    opengl2_use_csc (that, OGL2_cscs_yuv422);
-    glUniform1i (that->csc_shaders[OGL2_cscs_yuv422].args[3], 0);
-    glUniform2f (that->csc_shaders[OGL2_cscs_yuv422].args[4], that->yuvtex.yuy2_mul, that->yuvtex.yuy2_div);
+  {
+    opengl2_program_t *p = that->csc_shaders + shader;
+
+    glUniform4f (p->args[0], that->csc_matrix[0], that->csc_matrix[1], that->csc_matrix[2], that->csc_matrix[3]);
+    glUniform4f (p->args[1], that->csc_matrix[4], that->csc_matrix[5], that->csc_matrix[6], that->csc_matrix[7]);
+    glUniform4f (p->args[2], that->csc_matrix[8], that->csc_matrix[9], that->csc_matrix[10], that->csc_matrix[11]);
+    glUniform1i (p->args[3], 0);
   }
 
   glViewport( 0, 0, frame->width, frame->height );
@@ -1409,8 +1998,7 @@ static void opengl2_draw( opengl2_driver_t *that, opengl2_frame_t *frame )
   glMatrixMode( GL_MODELVIEW );
   glLoadIdentity();
 
-  GLuint video_texture = that->yuvtex.tex[OGL2_TEX_VIDEO_0];
-  glDrawBuffer( GL_COLOR_ATTACHMENT0 );
+  opengl2_vtex_swap (that);
 
   glBegin( GL_QUADS );
     glTexCoord2f( 0, 0 );    glVertex2i( 0, 0 );
@@ -1421,6 +2009,11 @@ static void opengl2_draw( opengl2_driver_t *that, opengl2_frame_t *frame )
 
   glUseProgram( 0 );
 
+  if (that->gamma.changed) {
+    that->gamma.changed = 0;
+    xprintf (that->xine, XINE_VERBOSITY_DEBUG, LOG_MODULE ": gamma %d.\n", that->gamma.value);
+  }
+    
   // post-processing
   if (that->sharp.changed) {
     that->sharp.side = that->sharp.value / 100.0 * frame->width / 1920.0;
@@ -1431,23 +2024,21 @@ static void opengl2_draw( opengl2_driver_t *that, opengl2_frame_t *frame )
     that->sharp.corn = that->sharp.side * 0.707;
     that->sharp.mid = 1.0 - 4.0 * (that->sharp.side + that->sharp.corn);
     that->sharp.changed = 0;
-    xprintf (that->xine, XINE_VERBOSITY_DEBUG, LOG_MODULE ": sharpness %d\n", that->sharp.value);
+    xprintf (that->xine, XINE_VERBOSITY_DEBUG, LOG_MODULE ": sharpness %d.\n", that->sharp.value);
   }
   if (that->sharp.value)
-    video_texture = opengl2_sharpness( that, frame, video_texture );
+    opengl2_sharpness (that, frame);
 
   // draw scaled overlays
-  opengl2_update_overlays( that );
   opengl2_draw_scaled_overlays( that, frame );
 
   glBindFramebuffer( GL_FRAMEBUFFER, 0 );
 
   // draw on screen
   {
-    int res = 0;
     opengl2_draw_info_t info;
 
-    info.video_texture = video_texture;
+    info.video_texture = that->vtex.tex;
 
     info.guiw = that->sc.gui_width;
     info.guih = that->sc.gui_height;
@@ -1459,37 +2050,41 @@ static void opengl2_draw( opengl2_driver_t *that, opengl2_frame_t *frame )
 
     info.dw  = that->sc.output_width;
     info.dh  = that->sc.displayed_height;
-    if (!(that->transform.flags & XINE_VO_TRANSFORM_FLIP_H)) {
-      info.dx1 = that->sc.output_xoffset;
-      info.dx2 = that->sc.output_xoffset + that->sc.output_width;
-    } else {
-      info.dx1 = that->sc.output_xoffset + that->sc.output_width;
-      info.dx2 = that->sc.output_xoffset;
-    }
-    if (!(that->transform.flags & XINE_VO_TRANSFORM_FLIP_V)) {
-      info.dy1 = that->sc.output_yoffset;
-      info.dy2 = that->sc.output_yoffset + that->sc.output_height;
-    } else {
-      info.dy1 = that->sc.output_yoffset + that->sc.output_height;
-      info.dy2 = that->sc.output_yoffset;
+    {
+      uint32_t indx;
+      indx = ((that->transform.flags >> _FLAG2BIT (XINE_VO_TRANSFORM_FLIP_H)) & 1) ^ 1;
+      info.dx[0] = info.dx[1] = that->sc.output_xoffset;
+      info.dx[indx] += that->sc.output_width;
+      indx = ((that->transform.flags >> _FLAG2BIT (XINE_VO_TRANSFORM_FLIP_V)) & 1) ^ 1;
+      info.dy[0] = info.dy[1] = that->sc.output_yoffset;
+      info.dy[indx] += that->sc.output_height;
     }
     that->transform.changed = 0;
 
-    if (that->bicubic.scale) {
-      if (that->sc.displayed_width != that->sc.output_width) {
-        if (that->sc.displayed_height != that->sc.output_height)
-          res = opengl2_draw_video_bicubic (that, &info);
-        else
-          res = opengl2_draw_video_cubic_x (that, &info);
-      } else {
-        if (that->sc.displayed_height != that->sc.output_height)
-          res = opengl2_draw_video_cubic_y (that, &info);
-        else
-          res = opengl2_draw_video_simple (that, &info);
-      }
+    state &= ~_OGL2_STATE_OK;
+    switch (that->bicubic.mode2 & SCALE_MASK) {
+      case SCALE_CATMULLROM:
+      case SCALE_COS:
+        if (that->sc.displayed_width != that->sc.output_width) {
+          if (that->sc.displayed_height != that->sc.output_height)
+            state |= opengl2_draw_video_bicubic (that, &info);
+          else
+            state |= opengl2_draw_video_cubic_x (that, &info);
+          break;
+        }
+        if (that->sc.displayed_height != that->sc.output_height) {
+          state |= opengl2_draw_video_cubic_y (that, &info);
+          break;
+        }
+        /* fall through */
+      case SCALE_SIMPLE:
+        state |= opengl2_draw_video_simple (that, &info);
+        break;
+      default: ;
     }
-    if (!res)
-      opengl2_draw_video_bilinear (that, &info);
+    if (!(state & _OGL2_STATE_OK))
+      state |= opengl2_draw_video_bilinear (that, &info);
+    that->bicubic.mode_changed = 0;
   }
 
   // draw unscaled overlays
@@ -1499,40 +2094,47 @@ static void opengl2_draw( opengl2_driver_t *that, opengl2_frame_t *frame )
     //that->mglXSwapInterval (1);
 
   that->gl->swap_buffers (that->gl);
+
+  if (state & _OGL2_STATE_CHANGED)
+    _ogl2_dump_tex_fmts (that);
+
   that->gl->release_current (that->gl);
+  return state & _OGL2_STATE_OK;
 }
 
 static void opengl2_display_frame( vo_driver_t *this_gen, vo_frame_t *frame_gen )
 {
   opengl2_driver_t  *this  = (opengl2_driver_t *) this_gen;
   opengl2_frame_t   *frame = (opengl2_frame_t *) frame_gen;
+  int rd = (frame->width ^ this->sc.delivered_width)
+         | (frame->height ^ this->sc.delivered_height)
+         | (frame->vo_frame.crop_left ^ this->sc.crop_left)
+         | (frame->vo_frame.crop_right ^ this->sc.crop_right)
+         | (frame->vo_frame.crop_top ^ this->sc.crop_top)
+         | (frame->vo_frame.crop_bottom ^ this->sc.crop_bottom);
 
-  if ( (frame->width != this->sc.delivered_width) ||
-                  (frame->height != this->sc.delivered_height) ||
-                  (frame->ratio != this->sc.delivered_ratio) ||
-                  (frame->vo_frame.crop_left != this->sc.crop_left) ||
-                  (frame->vo_frame.crop_right != this->sc.crop_right) ||
-                  (frame->vo_frame.crop_top != this->sc.crop_top) ||
-                  (frame->vo_frame.crop_bottom != this->sc.crop_bottom) ) {
+  if (rd || (frame->ratio != this->sc.delivered_ratio)) {
+    this->sc.delivered_height = frame->height;
+    this->sc.delivered_width  = frame->width;
+    this->sc.delivered_ratio  = frame->ratio;
+    this->sc.crop_left        = frame->vo_frame.crop_left;
+    this->sc.crop_right       = frame->vo_frame.crop_right;
+    this->sc.crop_top         = frame->vo_frame.crop_top;
+    this->sc.crop_bottom      = frame->vo_frame.crop_bottom;
     this->sc.force_redraw = 1;    /* trigger re-calc of output size */
   }
 
-  this->sc.delivered_height = frame->height;
-  this->sc.delivered_width  = frame->width;
-  this->sc.delivered_ratio  = frame->ratio;
-  this->sc.crop_left        = frame->vo_frame.crop_left;
-  this->sc.crop_right       = frame->vo_frame.crop_right;
-  this->sc.crop_top         = frame->vo_frame.crop_top;
-  this->sc.crop_bottom      = frame->vo_frame.crop_bottom;
+  /* opengl2_redraw_needed (this_gen); */
+  _x_vo_scale_compute_ideal_size (&this->sc);
+  if (_x_vo_scale_redraw_needed (&this->sc))
+    _x_vo_scale_compute_output_size (&this->sc);
 
-  opengl2_redraw_needed( this_gen );
-
-  if (this->gl->resize) {
-    if (this->last_gui_width != this->sc.gui_width || this->last_gui_height != this->sc.gui_height) {
-      this->last_gui_width = this->sc.gui_width;
-      this->last_gui_height = this->sc.gui_height;
-      this->gl->resize(this->gl, this->last_gui_width, this->last_gui_height);
-    }
+  rd = (this->last_gui_width ^ this->sc.gui_width) | (this->last_gui_height ^ this->sc.gui_height);
+  if (rd) {
+    this->last_gui_width = this->sc.gui_width;
+    this->last_gui_height = this->sc.gui_height;
+    if (this->gl->resize)
+      this->gl->resize (this->gl, this->last_gui_width, this->last_gui_height);
   }
 
   if( !this->exiting ) {
@@ -1576,6 +2178,8 @@ static int opengl2_get_property( vo_driver_t *this_gen, int property )
       return this->contrast;
     case VO_PROP_BRIGHTNESS:
       return this->brightness;
+    case VO_PROP_GAMMA:
+      return this->gamma.value;
     case VO_PROP_SHARPNESS:
       return this->sharp.value;
     case VO_PROP_ZOOM_X:
@@ -1632,6 +2236,12 @@ static int opengl2_set_property( vo_driver_t *this_gen, int property, int value 
     case VO_PROP_SATURATION: this->saturation = value; this->update_csc = 1; break;
     case VO_PROP_CONTRAST: this->contrast = value; this->update_csc = 1; break;
     case VO_PROP_BRIGHTNESS: this->brightness = value; this->update_csc = 1; break;
+    case VO_PROP_GAMMA:
+      this->gamma.value = value;
+      this->gamma.changed = 1;
+      this->gamma.gamma2 = -(float)value / (float)128;
+      this->gamma.gamma1 = 1.0 - this->gamma.gamma2;
+      break;
     case VO_PROP_SHARPNESS: this->sharp.value = value; this->sharp.changed = 1; break;
     case VO_PROP_TRANSFORM:
       value &= XINE_VO_TRANSFORM_FLIP_H | XINE_VO_TRANSFORM_FLIP_V;
@@ -1650,13 +2260,13 @@ static void opengl2_get_property_min_max( vo_driver_t *this_gen, int property, i
   (void)this_gen;
   switch ( property ) {
     case VO_PROP_HUE:
+    case VO_PROP_BRIGHTNESS:
+    case VO_PROP_GAMMA:
       *max = 127; *min = -128; break;
     case VO_PROP_SATURATION:
       *max = 255; *min = 0; break;
     case VO_PROP_CONTRAST:
       *max = 255; *min = 0; break;
-    case VO_PROP_BRIGHTNESS:
-      *max = 127; *min = -128; break;
     case VO_PROP_SHARPNESS:
       *max = 100; *min = -100; break;
     default:
@@ -1730,23 +2340,58 @@ static uint32_t opengl2_get_capabilities( vo_driver_t *this_gen )
          VO_CAP_SATURATION |
          VO_CAP_CONTRAST |
          VO_CAP_BRIGHTNESS |
+         VO_CAP_GAMMA |
          VO_CAP_SHARPNESS;
 }
 
+static void opengl2_set_bicubic (void *this_gen, xine_cfg_entry_t *entry) {
+  opengl2_driver_t *this = (opengl2_driver_t *)this_gen;
+  int mode1 = !!entry->num_value;
 
+  if ((this->bicubic.mode1 == mode1) || this->bicubic.mode_changing)
+    return;
 
-static void opengl2_set_bicubic( void *this_gen, xine_cfg_entry_t *entry )
-{
-  opengl2_driver_t  *this  = (opengl2_driver_t *) this_gen;
+  this->bicubic.mode_changed = 1;
+  this->bicubic.mode_changing = 1;
+  this->bicubic.mode1 = mode1;
+  this->bicubic.mode2 = mode1 ? SCALE_CATMULLROM : SCALE_LINEAR;
+  this->bicubic.lut_y = _opengl2_lut_y[this->bicubic.mode2];
+  this->xine->config->update_num (this->xine->config, "video.output.opengl2_scale_mode", this->bicubic.mode2);
+  this->bicubic.mode_changing = 0;
 
-  this->bicubic.scale = entry->num_value;
-  xprintf( this->xine, XINE_VERBOSITY_DEBUG, LOG_MODULE ": scale_bicubic=%d\n", this->bicubic.scale);
+  xprintf (this->xine, XINE_VERBOSITY_DEBUG,
+    LOG_MODULE ": scale mode %s.\n", _opengl2_scale_names[this->bicubic.mode2]);
+}
+
+static void opengl2_set_scale_mode (void *this_gen, xine_cfg_entry_t *entry) {
+  opengl2_driver_t *this = (opengl2_driver_t *)this_gen;
+  opengl2_scale_t mode2 = entry->num_value;
+  int mode1;
+
+  if ((this->bicubic.mode2 == mode2) || this->bicubic.mode_changing)
+    return;
+
+  this->bicubic.mode_changed = 1;
+  this->bicubic.mode_changing = 1;
+  this->bicubic.mode2 = mode2;
+  this->bicubic.lut_y = _opengl2_lut_y[this->bicubic.mode2];
+  mode1 = mode2 <= SCALE_LINEAR ? 0 : 1;
+  if (mode1 != this->bicubic.mode1) {
+    this->bicubic.mode1 = mode1;
+    this->xine->config->update_num (this->xine->config, "video.output.opengl2_bicubic_scaling", mode1);
+  }
+  this->bicubic.mode_changing = 0;
+
+  xprintf (this->xine, XINE_VERBOSITY_DEBUG,
+    LOG_MODULE ": scale mode %s.\n", _opengl2_scale_names[this->bicubic.mode2]);
 }
 
 static void opengl2_dispose (vo_driver_t *this_gen) {
   opengl2_driver_t *this = (opengl2_driver_t *) this_gen;
 
   opengl2_exit_unregister (this);
+
+  opengl2_free_log_buf (this);
 
   if (this->glconv)
     this->glconv->destroy(&this->glconv);
@@ -1768,33 +2413,20 @@ static void opengl2_dispose (vo_driver_t *this_gen) {
     for (u = 1; u < OGL2_cscs_LAST; u++)
       opengl2_delete_program (&this->csc_shaders[u]);
   }
+  opengl2_delete_program (&this->sharp.program);
+  opengl2_delete_program (&this->bicubic.pass1_program);
+  opengl2_delete_program (&this->bicubic.pass2_program);
 
-  if (this->sharp.program.compiled)
-    opengl2_delete_program (&this->sharp.program);
-
-  if (this->bicubic.pass1_program.compiled)
-    opengl2_delete_program (&this->bicubic.pass1_program);
-  if (this->bicubic.pass2_program.compiled)
-    opengl2_delete_program (&this->bicubic.pass2_program);
-  if (this->bicubic.lut_texture)
-    glDeleteTextures (1, &this->bicubic.lut_texture);
-  if (this->bicubic.pass1_texture)
-    glDeleteTextures (1, &this->bicubic.pass1_texture);
   if (this->bicubic.fbo)
     glDeleteFramebuffers (1, &this->bicubic.fbo);
 
-  glDeleteTextures (OGL2_TEX_LAST, this->yuvtex.tex);
+  glDeleteTextures (OGL2_TEX_LAST, this->tex);
   if ( this->fbo )
     glDeleteFramebuffers( 1, &this->fbo );
-  if ( this->videoPBO )
-    glDeleteBuffers( 1, &this->videoPBO );
-  if (this->overlayPBO)
-    glDeleteBuffers( 1, &this->overlayPBO );
+  if (this->PBO[0])
+    glDeleteBuffers (sizeof (this->PBO) / sizeof (this->PBO[0]), this->PBO);
 
-  int i;
-  for ( i=0; i<XINE_VORAW_MAX_OVL; ++i ) {
-    glDeleteTextures( 1, &this->overlays[i].tex );
-  }
+  glDeleteTextures (XINE_VORAW_MAX_OVL, this->overlay_tex);
 
   this->gl->release_current(this->gl);
   this->gl->dispose(&this->gl);
@@ -1830,48 +2462,55 @@ static vo_driver_t *opengl2_open_plugin (video_driver_class_t *class_gen, const 
   if (!this)
     return NULL;
 #ifndef HAVE_ZERO_SAFE_MEM
+  this->log                            = NULL;
+  this->lsize                          = 0;
   this->last_csc_shader                = OGL2_cscs_NONE;
   this->hue                            = 0;
   this->brightness                     = 0;
-  this->sharp.changed                  = 0;
+  this->gamma.value                    = 0;
   this->sharp.value                    = 0;
   this->transform.flags                = 0;
   this->transform.changed              = 0;
   this->sharp.program.compiled         = 0;
   this->bicubic.pass1_program.compiled = 0;
   this->bicubic.pass2_program.compiled = 0;
-  this->bicubic.lut_texture            = 0;
-  this->bicubic.pass1_texture          = 0;
   this->bicubic.pass1_tex_w            = 0;
   this->bicubic.pass1_tex_h            = 0;
   this->bicubic.fbo                    = 0;
-  this->ovl_changed                    = 0;
-  this->num_ovls                       = 0;
-  this->yuvtex.tex[OGL2_TEX_VIDEO_0]   = 0;
-  this->yuvtex.tex[OGL2_TEX_VIDEO_1]   = 0;
-  this->yuvtex.tex[OGL2_TEX_y]         = 0;
-  this->yuvtex.tex[OGL2_TEX_u_v]       = 0;
-  this->yuvtex.tex[OGL2_TEX_u]         = 0;
-  this->yuvtex.tex[OGL2_TEX_v]         = 0;
-  this->yuvtex.tex[OGL2_TEX_yuv]       = 0;
-  this->yuvtex.tex[OGL2_TEX_uv]        = 0;
+  this->bicubic.mode_changed           = 0;
+  this->bicubic.mode_changing          = 0;
+  this->ovl.changed                    = 0;
+  this->ovl.num                       = 0;
+  {
+    int32_t i;
+    for (i = 0; i < OGL2_TEX_LAST; i++)
+      this->tex[i]                     = 0;
+    for (i = 0; i < XINE_VORAW_MAX_OVL + 1; i++)
+      this->overlay_tex[i]             = 0;
+  }
   this->yuvtex.width                   = 0;
   this->yuvtex.height                  = 0;
   this->yuvtex.bytes_per_pixel         = 0;
   this->fbo                            = 0;
-  this->videoPBO                       = 0;
+  this->PBO[0]                         = 0;
+  this->PBO[1]                         = 0;
+  this->PBO[2]                         = 0;
   {
     int i;
     for (i = 0; i < XINE_VORAW_MAX_OVL; ++i) {
-      this->overlays[i].ovl_w = this->overlays[i].ovl_h = 0;
-      this->overlays[i].ovl_x = this->overlays[i].ovl_y = 0;
-      this->overlays[i].unscaled = 0;
-      this->overlays[i].tex = 0;
-      this->overlays[i].tex_w = this->overlays[i].tex_h = 0;
+      this->ovl.buf[i].ovl_w = this->ovl.buf[i].ovl_h = 0;
+      this->ovl.buf[i].ovl_x = this->ovl.buf[i].ovl_y = 0;
+      this->ovl.buf[i].unscaled = 0;
+      this->ovl.buf[i].tex_w = this->ovl.buf[i].tex_h = 0;
     }
   }
 #endif
+
   this->bicubic.flags = ~0;
+  this->ovl.blend = _opengl2_overlay_dummy_blend;
+  this->ovl.end   = _opengl2_overlay_dummy_end;
+
+  this->vtex.index = 1;
 
   this->gl = _x_load_gl (class->xine, class->visual_type, visual_gen, XINE_GL_API_OPENGL);
   if (this->gl) {
@@ -1927,7 +2566,7 @@ static vo_driver_t *opengl2_open_plugin (video_driver_class_t *class_gen, const 
     this->vo_driver.redraw_needed        = opengl2_redraw_needed;
 
     if (!this->gl->make_current (this->gl)) {
-      xprintf (this->xine, XINE_VERBOSITY_LOG, LOG_MODULE ": display unavailable for initialization\n");
+      xprintf (this->xine, XINE_VERBOSITY_LOG, LOG_MODULE ": display unavailable for initialization.\n");
     } else {
       {
         GLint v[1] = {0};
@@ -1968,20 +2607,66 @@ static vo_driver_t *opengl2_open_plugin (video_driver_class_t *class_gen, const 
 #define INITHEIGHT 576
       do {
         char buf[1024];
-        const char *p2_swizzle = (this->fmt_2p == GL_RG) ? "g" : "a";
-        if (!opengl2_check_textures_size (this, INITWIDTH, INITHEIGHT, 1))
+        const char p2_swizzle = (this->fmt_2p == GL_RG) ? 'g' : 'a';
+        uint32_t u;
+
+        if (!opengl2_check_textures_size (this, INITWIDTH, INITHEIGHT, 8))
           break;
+
         if (!opengl2_build_program (this, &this->csc_shaders[OGL2_cscs_yuv420], yuv420_frag, "yuv420_frag", yuv420_args))
           break;
+        opengl2_build_program (this, &this->csc_shaders[OGL2_cscs_yuv420g], yuv420g_frag, "yuv420g_frag", yuv420g_args);
+
         if (!opengl2_build_program (this, &this->csc_shaders[OGL2_cscs_yuv420j], yuv420j_frag, "yuv420j_frag", yuv420j_args))
           break;
-        snprintf (buf, sizeof (buf), nv12_frag, p2_swizzle);
+        opengl2_build_program (this, &this->csc_shaders[OGL2_cscs_yuv420jg], yuv420jg_frag, "yuv420jg_frag", yuv420jg_args);
+
+        memcpy (buf, yuv420j16_frag, sizeof (yuv420j16_frag));
+        u = strchr (yuv420j16_frag, '$') - yuv420j16_frag;
+        buf[u] = p2_swizzle;
+        u = strchr (yuv420j16_frag + u + 1, '$') - yuv420j16_frag;
+        buf[u] = p2_swizzle;
+        u = strchr (yuv420j16_frag + u + 1, '$') - yuv420j16_frag;
+        buf[u] = p2_swizzle;
+        if (!opengl2_build_program (this, &this->csc_shaders[OGL2_cscs_yuv420j16], buf, "yuv420j16_frag", yuv420j16_args))
+          break;
+        memcpy (buf, yuv420j16g_frag, sizeof (yuv420j16g_frag));
+        u = strchr (yuv420j16g_frag, '$') - yuv420j16g_frag;
+        buf[u] = p2_swizzle;
+        u = strchr (yuv420j16g_frag + u + 1, '$') - yuv420j16g_frag;
+        buf[u] = p2_swizzle;
+        u = strchr (yuv420j16g_frag + u + 1, '$') - yuv420j16g_frag;
+        buf[u] = p2_swizzle;
+        opengl2_build_program (this, &this->csc_shaders[OGL2_cscs_yuv420j16g], buf, "yuv420j16g_frag", yuv420j16g_args);
+
+        memcpy (buf, nv12_frag, sizeof (nv12_frag));
+        /* gcc sees these "u" really are compile time constants :-)) */
+        u = strchr (nv12_frag, '$') - nv12_frag;
+        buf[u] = p2_swizzle;
         if (!opengl2_build_program (this, &this->csc_shaders[OGL2_cscs_nv12], buf, "nv12_frag", nv12_args))
           break;
-        snprintf (buf, sizeof (buf), yuv422_frag, p2_swizzle, p2_swizzle);
+        memcpy (buf, nv12g_frag, sizeof (nv12g_frag));
+        u = strchr (nv12g_frag, '$') - nv12g_frag;
+        buf[u] = p2_swizzle;
+        opengl2_build_program (this, &this->csc_shaders[OGL2_cscs_nv12g], buf, "nv12g_frag", nv12g_args);
+
+        memcpy (buf, yuv422_frag, sizeof (yuv422_frag));
+        u = strchr (yuv422_frag, '$') - yuv422_frag;
+        buf[u] = p2_swizzle;
+        u = strchr (yuv422_frag + u + 1, '$') - yuv422_frag;
+        buf[u] = p2_swizzle;
         if (!opengl2_build_program (this, &this->csc_shaders[OGL2_cscs_yuv422], buf, "yuv422_frag", yuv422_args))
           break;
+        memcpy (buf, yuv422g_frag, sizeof (yuv422g_frag));
+        u = strchr (yuv422g_frag, '$') - yuv422g_frag;
+        buf[u] = p2_swizzle;
+        u = strchr (yuv422g_frag + u + 1, '$') - yuv422g_frag;
+        buf[u] = p2_swizzle;
+        opengl2_build_program (this, &this->csc_shaders[OGL2_cscs_yuv422g], buf, "yuv422g_frag", yuv422g_args);
+
         this->gl->release_current (this->gl);
+
+        opengl2_free_log_buf (this);
 
         this->update_csc = 1;
         this->color_standard = 10;
@@ -1989,14 +2674,53 @@ static vo_driver_t *opengl2_open_plugin (video_driver_class_t *class_gen, const 
         this->contrast = 128;
         cm_init (this);
 
-        if (this->texture_float) {
-          this->bicubic.scale = config->register_bool (config,
-            "video.output.opengl2_bicubic_scaling", 0,
-            _("opengl2: use a bicubic algo to scale the video"),
-            _("Set to true if you want bicubic scaling.\n\n"),
-            10, opengl2_set_bicubic, this);
-        } else {
-          this->bicubic.scale = 0;
+        /* force initial debug message */
+        this->gamma.changed = 1;
+        this->sharp.changed = 1;
+
+        {
+          opengl2_scale_t scale_max;
+
+          if (this->texture_float) {
+            scale_max = SCALE_LAST - 1;
+            this->bicubic.mode1 = config->register_bool (config,
+              "video.output.opengl2_bicubic_scaling", 0,
+              _("opengl2: use a bicubic algo to scale the video"),
+              _("Set to true if you want bicubic scaling.\n\n"),
+              10, opengl2_set_bicubic, this);
+          } else {
+            scale_max = SCALE_LINEAR;
+            this->bicubic.mode1 = 0;
+          }
+          this->bicubic.mode2 = config->register_range (config,
+            "video.output.opengl2_scale_mode", SCALE_LINEAR, 0, scale_max,
+            _("opengl2: video scale mode"),
+            _("0: Simple. Very fast, very sharp,\n"
+              "   but also stairsteps, uneven lines, and flickering movement.\n\n"
+              "1: Linear blending. Fast, very smooth, but also a bit blurry.\n\n"
+              "2: Catmullrom blending. Very smooth, sharp, but needs fast hardware.\n\n"
+              "3: Cosinus blending. Smooth, very sharp, but needs fast hardware.\n"),
+              10, opengl2_set_scale_mode, this);
+          if (this->bicubic.mode2 == SCALE_LINEAR) {
+            if (this->bicubic.mode1) {
+              this->bicubic.mode_changing = 1;
+              this->bicubic.mode2 = SCALE_CATMULLROM;
+              config->update_num (config, "video.output.opengl2_scale_mode", this->bicubic.mode2);
+              this->bicubic.mode_changing = 0;
+            }
+          } else {
+            int mode1 = this->bicubic.mode2 <= SCALE_LINEAR ? 0 : 1;
+
+            if (this->bicubic.mode1 != mode1) {
+              this->bicubic.mode_changing = 1;
+              this->bicubic.mode1 = mode1;
+              config->update_num (config, "video.output.opengl2_bicubic_scaling", mode1);
+              this->bicubic.mode_changing = 0;
+            }
+          }
+          this->bicubic.lut_y = _opengl2_lut_y[this->bicubic.mode2];
+          xprintf (this->xine, XINE_VERBOSITY_DEBUG,
+            LOG_MODULE ": scale mode %s.\n", _opengl2_scale_names[this->bicubic.mode2]);
         }
 
         this->hw = _x_hwdec_new(this->xine, &this->vo_driver, class->visual_type, visual_gen, 0);
@@ -2032,7 +2756,7 @@ static uint32_t opengl2_check_platform (xine_t *xine, unsigned visual_type, cons
 
   if (gl->make_current (gl)) {
     xine_gl_extensions_t extensions;
-    const char *names = glGetString (GL_EXTENSIONS);
+    const char *names = (const char *)glGetString (GL_EXTENSIONS);
 
     xine_gl_extensions_load (&extensions, names);
     result  = xine_gl_extensions_test (&extensions, "GL_ARB_texture_float") ? 2 : 0;
@@ -2100,10 +2824,10 @@ static const vo_info_t vo_info_opengl2_wl = {
 /*
  * exported plugin catalog entry
  */
-
 const plugin_info_t xine_plugin_info[] EXPORTED = {
   /* type, API, "name", version, special_info, init_function */
   { PLUGIN_VIDEO_OUT, 22, "opengl2", XINE_VERSION_CODE, &vo_info_opengl2,    opengl2_init_class_x11 },
   { PLUGIN_VIDEO_OUT, 22, "opengl2", XINE_VERSION_CODE, &vo_info_opengl2_wl, opengl2_init_class_wl },
   { PLUGIN_NONE, 0, NULL, 0, NULL, NULL }
 };
+

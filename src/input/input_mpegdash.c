@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2021 the xine project
+ * Copyright (C) 2021-2023 the xine project
  *
  * This file is part of xine, a free video player.
  *
@@ -50,7 +50,6 @@
 #include "input_helper.h"
 #include "group_network.h"
 #include "multirate_pref.c"
-#include "net_buf_ctrl.h"
 
 typedef struct {
   input_class_t     input_class;
@@ -72,6 +71,7 @@ typedef struct {
   uint32_t frag_start;                   /** << frag number offset */
   uint32_t frag_duration;                /** << timebase units */
   uint32_t frag_count;                   /** << 0 in live mode */
+  xine_rats_t fd;                        /** << shortened frag_duration / timebase */
 } mpd_stream_info_t;
 
 typedef enum {
@@ -110,8 +110,8 @@ typedef struct mpd_input_plugin_s {
 
   struct {
     pthread_mutex_t mutex;
-    time_t          avail_start, play_start; /** << seconds since 1970 */
-    struct timespec play_systime;
+    struct timespec avail_start, play_start; /** << from stream, since 1970 */
+    struct timespec sys_lag; /** << sys_time_at_play_start - play_start */
     int             lag;  /** pts */
     uint32_t        type;
     int             init;
@@ -185,67 +185,6 @@ static uint32_t str2uint32 (char **s) {
   }
   *s = (char *)p;
   return v;
-}
-
-static time_t mpd_str2time (char *s) {
-  char buf[256], *tz;
-  struct tm tm;
-  time_t ret;
-  /* Sigh. try to parse something like "1969-12-31T23:59:44Z" or "PT5H30M55S". */
-  if (!s)
-    return (time_t)-1;
-
-  if (((s[0] | 0x20) == 'p') && ((s[1] | 0x20) == 't')) {
-    ret = 0;
-    s += 2;
-    while (1) {
-      uint32_t v = str2uint32 (&s);
-      uint32_t z = (*s | 0x20);
-      if (z == 'h')
-        ret += 3600u * v;
-      else if (z == 'm')
-        ret += 60u * v;
-      else if (z == 's')
-        ret += v;
-      else
-        break;
-      s++;
-    }
-    return ret;
-  }
-
-  tm.tm_year = (int)str2uint32 (&s) - 1900;
-  if (*s++ != '-')
-    return (time_t)-1;
-  tm.tm_mon = (int)str2uint32 (&s) - 1;
-  if (*s++ != '-')
-    return (time_t)-1;
-  tm.tm_mday= str2uint32 (&s);
-  if ((*s++ | 0x20) != 't')
-    return (time_t)-1;
-  tm.tm_hour = str2uint32 (&s);
-  if (*s++ != ':')
-    return (time_t)-1;
-  tm.tm_min = str2uint32 (&s);
-  if (*s++ != ':')
-    return (time_t)-1;
-  tm.tm_sec = str2uint32 (&s);
-  tm.tm_wday = 0;
-  tm.tm_yday = 0;
-  tm.tm_isdst = 0;
-
-  tz = getenv ("TZ");
-  strlcpy (buf, tz ? tz : "", sizeof (buf));
-  setenv ("TZ", "", 1);
-  tzset ();
-  ret = mktime (&tm);
-  if (buf[0])
-    setenv ("TZ", buf, 1);
-  else
-    unsetenv ("TZ");
-  tzset ();
-
-  return ret;
 }
 
 static char *mpd_strcasestr (const char *haystack, const char *needle) {
@@ -374,11 +313,13 @@ static int mpd_set_start_time (mpd_input_plugin_t *this) {
 
   if (!this->side_index) { /* main */
     char buf[256];
-    time_t play_start;
-    struct timespec ts;
+    struct timespec play_start, sys_start = {0, 0};
+    int64_t slag1;
+    int slag2;
+    xine_rats_t fd;
     int l;
 
-    if (this->sync.avail_start == (time_t)-1)
+    if (this->sync.avail_start.tv_sec == (time_t)-1)
       return 0;
     if (!this->info.timebase || !this->info.frag_duration)
       return 0;
@@ -390,30 +331,43 @@ static int mpd_set_start_time (mpd_input_plugin_t *this) {
     if (l <= 0)
       return 0;
     buf[l] = 0;
-    play_start = mpd_str2time (buf);
-    if (play_start == (time_t)-1)
-      return 0;
-    ts.tv_sec = 0;
-    ts.tv_nsec = 0;
-    xine_gettime (&ts);
+    xine_gettime (&sys_start);
+    play_start = sys_start;
+    xine_ts_from_string (&play_start, buf);
+    xine_ts_sub (&sys_start, &play_start);
     this->frag_index = 1;
+    slag1 = xine_ts_to_timebase (&sys_start, 1000);
+    slag2 = slag1 % 1000;
+    slag1 /= 1000;
+    slag2 = slag2 < 0 ? -slag2 : slag2;
+    xprintf (this->stream->xine, XINE_VERBOSITY_DEBUG,
+      "input_mpegdash.%d: local system clock off by %" PRId64 ".%03d s.\n",
+      (int)this->side_index, slag1, slag2);
     /* heavy magic ;-) */
     {
-      int64_t d = play_start - this->sync.avail_start - this->rewind;
-      d *= this->info.timebase;
-      this->frag_num = d / this->info.frag_duration + this->info.frag_start;
-      this->lag = (d % this->info.frag_duration) * 90000 / this->info.timebase;
+      int64_t diff;
+      struct timespec ts = play_start;
+      xine_ts_sub (&ts, &this->sync.avail_start);
+      ts.tv_sec -= this->rewind;
+      fd.num = this->info.frag_duration;
+      fd.den = this->info.timebase;
+      xine_rats_shorten (&fd);
+      diff = xine_ts_to_timebase (&ts, fd.den);
+      this->frag_num = diff / fd.num + this->info.frag_start;
+      this->lag = (diff % fd.num) * 90000 / fd.den;
     }
     if (this->sync.init) {
       pthread_mutex_lock (&this->sync.mutex);
+      this->info.fd = fd;
       this->sync.play_start = play_start;
-      this->sync.play_systime = ts;
+      this->sync.sys_lag = sys_start;
       this->sync.lag = this->lag;
       this->sync.type = this->info.type;
       pthread_mutex_unlock (&this->sync.mutex);
     } else {
+      this->info.fd = fd;
       this->sync.play_start = play_start;
-      this->sync.play_systime = ts;
+      this->sync.sys_lag = sys_start;
       this->sync.lag = this->lag;
       this->sync.type = this->info.type;
     }
@@ -426,26 +380,33 @@ static int mpd_set_start_time (mpd_input_plugin_t *this) {
       pthread_mutex_lock (&this->sync.mutex);
       this->sync.avail_start = main_input->sync.avail_start;
       this->sync.play_start = main_input->sync.play_start;
-      this->sync.play_systime = main_input->sync.play_systime;
+      this->sync.sys_lag = main_input->sync.sys_lag;
       this->sync.lag = main_input->sync.lag;
       this->sync.type = main_input->sync.type;
       pthread_mutex_unlock (&this->sync.mutex);
     } else {
       this->sync.avail_start = main_input->sync.avail_start;
       this->sync.play_start = main_input->sync.play_start;
-      this->sync.play_systime = main_input->sync.play_systime;
+      this->sync.sys_lag = main_input->sync.sys_lag;
       this->sync.lag = main_input->sync.lag;
       this->sync.type = main_input->sync.type;
     }
-    if (this->sync.avail_start == (time_t)-1)
+    if (this->sync.avail_start.tv_sec == (time_t)-1)
       return 0;
     this->frag_index = 1;
     /* heavy magic ;-) */
     {
-      int64_t d = this->sync.play_start - this->sync.avail_start - this->rewind;
-      d *= this->info.timebase;
-      this->frag_num = d / this->info.frag_duration + this->info.frag_start;
-      this->lag = (d % this->info.frag_duration) * 90000 / this->info.timebase;
+      int64_t diff;
+      xine_rats_t fd;
+      struct timespec ts = this->sync.play_start;
+      xine_ts_sub (&ts, &this->sync.avail_start);
+      ts.tv_sec -= this->rewind;
+      fd.num = this->info.frag_duration;
+      fd.den = this->info.timebase;
+      xine_rats_shorten (&fd);
+      diff = xine_ts_to_timebase (&ts, fd.den);
+      this->frag_num = diff / fd.num + this->info.frag_start;
+      this->lag = (diff % fd.num) * 90000 / fd.den;
     }
   }
     
@@ -471,12 +432,17 @@ static int mpd_set_frag_index (mpd_input_plugin_t *this, uint32_t index, int wai
     if (!wait) 
       return 2;
     if (d > 0) {
+      int64_t diff;
       int32_t ms;
-      struct timespec ts = {0, 0};
-      xine_gettime (&ts);
-      ms = (ts.tv_sec - this->sync.play_systime.tv_sec) * 1000;
-      ms += (ts.tv_nsec - this->sync.play_systime.tv_nsec) / 1000000;
-      ms = (int64_t)(index - 1) * 1000 * this->info.frag_duration / this->info.timebase - ms;
+      struct timespec now = {0, 0}, next;
+      xine_gettime (&now);
+      diff = (int64_t)(index - 1) * this->info.fd.num * 1000 / this->info.fd.den;
+      next.tv_sec = diff / 1000;
+      next.tv_nsec = (diff % 1000) * 1000000;
+      xine_ts_add (&next, &this->sync.play_start);
+      xine_ts_add (&next, &this->sync.sys_lag);
+      xine_ts_sub (&next, &now);
+      ms = xine_ts_to_timebase (&next, 1000);
       if ((ms > 0) && (ms < 100000)) {
         /* save server load and hang up before wait. */
         if (this->in1) {
@@ -721,8 +687,10 @@ static int mpd_input_load_manifest (mpd_input_plugin_t *this) {
     this->seg_base_url = this->base_url;
   this->time_url = mpd_stree_find (this, "UTCTiming.value", tree_mpd);
   {
+    struct timespec ts = {0, 0};
     char *s = this->list_buf + mpd_stree_find (this, "availabilityStartTime", tree_mpd);
-    this->sync.avail_start = mpd_str2time (s);
+    xine_ts_from_string (&ts, s);
+    this->sync.avail_start = ts;
   }
 
   {
@@ -1089,7 +1057,7 @@ static void mpd_input_dispose (input_plugin_t *this_gen) {
     return;
 
   if (this->nbc) {
-    nbc_close (this->nbc);
+    xine_nbc_close (this->nbc);
     this->nbc = NULL;
   }
   if (this->in1) {
@@ -1263,7 +1231,7 @@ static input_plugin_t *mpd_get_side (mpd_input_plugin_t *this, int side_index) {
     free (side_input);
     return NULL;
   }
-  side_input->nbc = nbc_init (side_input->stream);
+  side_input->nbc = xine_nbc_init (side_input->stream);
 
   return &side_input->input_plugin;
 }
@@ -1407,8 +1375,8 @@ static input_plugin_t *mpd_input_get_instance (input_class_t *cls_gen, xine_stre
   this->stream = stream;
   this->in1    = in1;
   this->num_sides = 0;
-  this->sync.avail_start =
-  this->sync.play_start  = (time_t)-1;
+  this->sync.avail_start.tv_sec =
+  this->sync.play_start.tv_sec  = (time_t)-1;
   this->sync.refs = 1;
 
   xprintf (this->stream->xine, XINE_VERBOSITY_DEBUG,
@@ -1430,7 +1398,7 @@ static input_plugin_t *mpd_input_get_instance (input_class_t *cls_gen, xine_stre
   this->input_plugin.dispose            = mpd_input_dispose;
   this->input_plugin.input_class        = &cls->input_class;
 
-  this->nbc = stream ? nbc_init (stream) : NULL;
+  this->nbc = xine_nbc_init (stream);
 
   return &this->input_plugin;
 }

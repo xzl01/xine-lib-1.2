@@ -9,11 +9,11 @@ debian/tmp/usr/lib/*/xine/plugins/*/xineplug_inp_mms.so
 debian/tmp/usr/lib/*/xine/plugins/*/xineplug_inp_network.so
 [linux-any] debian/tmp/usr/lib/*/xine/plugins/*/xineplug_inp_pvr.so
 debian/tmp/usr/lib/*/xine/plugins/*/xineplug_inp_rtp.so
-[!hurd-i386] debian/tmp/usr/lib/*/xine/plugins/*/xineplug_inp_smb.so
+debian/tmp/usr/lib/*/xine/plugins/*/xineplug_inp_smb.so
 #[linux-any] debian/tmp/usr/lib/*/xine/plugins/*/xineplug_inp_v4l.so
 [linux-any] debian/tmp/usr/lib/*/xine/plugins/*/xineplug_inp_v4l2.so
 debian/tmp/usr/lib/*/xine/plugins/*/xineplug_inp_vcd.so
-[!hurd-i386] debian/tmp/usr/lib/*/xine/plugins/*/xineplug_inp_vcdo.so
+[!hurd-any] debian/tmp/usr/lib/*/xine/plugins/*/xineplug_inp_vcdo.so
 
 # audio output plugins
 [linux-any] debian/tmp/usr/lib/*/xine/plugins/*/xineplug_ao_out_alsa.so

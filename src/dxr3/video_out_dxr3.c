@@ -248,7 +248,7 @@ static vo_driver_t *dxr3_vo_open_plugin(video_driver_class_t *class_gen, const v
   this->add_bars                       = config->register_bool(config,
     "dxr3.encoding.add_bars", 1, _("add black bars to correct aspect ratio"),
     _("Adds black bars when the image has an aspect ratio the card cannot "
-      "handle natively. This is needed to maintain proper image proportions."),
+      "handle natively."),
     20, dxr3_update_add_bars, this);
   this->enhanced_mode                  = config->register_bool(config,
     "dxr3.encoding.alt_play_mode", 1,

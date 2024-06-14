@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2001-2021 the xine project
+ * Copyright (C) 2001-2023 the xine project
  *
  * This file is part of xine, a free video player.
  *
@@ -31,11 +31,18 @@
 #include <pthread.h>
 #include <math.h>
 
-#ifdef HAVE_FFMPEG_AVUTIL_H
-#  include <avcodec.h>
-#else
-#  include <libavcodec/avcodec.h>
+#if defined(HAVE_LIBAVUTIL_AVUTIL_H)
+#  include <libavutil/avutil.h>
+#endif
+
+#if defined(HAVE_LIBAVUTIL_MEM_H)
 #  include <libavutil/mem.h>
+#endif
+
+#if defined(HAVE_AVUTIL_AVCODEC_H)
+#  include <libavcodec/avcodec.h>
+#else
+#  include <avcodec.h>
 #endif
 
 #define LOG_MODULE "ffmpeg_audio_dec"
@@ -76,10 +83,18 @@ typedef struct ff_audio_decoder_s {
   AVCodecContext    *context;
   const AVCodec     *codec;
 
+  struct {
+    uint8_t        *buf;
+    size_t          len;
+  }                 parse, decode, send;
+
   char              *decode_buffer;
   int               decoder_ok;
+  int               pkt_sent;
 
   AVCodecParserContext *parser_context;
+  xine_pts_queue_t *pts_queue;
+
 #if XFF_AUDIO > 3
   AVFrame          *av_frame;
 #endif
@@ -288,12 +303,16 @@ static void ff_audio_init_codec(ff_audio_decoder_t *this, unsigned int codec_typ
 
   this->context->bits_per_sample = this->ff_bits;
   this->context->sample_rate = this->ff_sample_rate;
+#if XFF_AUDIO_CHANNEL_LAYOUT < 2
   this->context->channels    = this->ff_channels;
+#else
+  this->context->ch_layout.nb_channels = this->ff_channels;
+#endif
   this->context->codec_id    = this->codec->id;
   this->context->codec_type  = this->codec->type;
   this->context->codec_tag   = _x_stream_info_get(this->stream, XINE_STREAM_INFO_AUDIO_FOURCC);
 
-  /* Use parser for EAC3, AAC LATM and MPEG.
+  /* Use parser for EAC3, AAC LATM, and MPEG.
    * Fixes:
    *  - DVB streams where multiple AAC LATM frames are packed to single PES
    *  - DVB streams where MPEG audio frames do not follow PES packet boundaries
@@ -302,15 +321,16 @@ static void ff_audio_init_codec(ff_audio_decoder_t *this, unsigned int codec_typ
   if (codec_type == BUF_AUDIO_AAC_LATM ||
       codec_type == BUF_AUDIO_EAC3 ||
       codec_type == BUF_AUDIO_A52 ||
-      codec_type == BUF_AUDIO_MPEG) {
+      codec_type == BUF_AUDIO_MPEG ||
+      codec_type == BUF_AUDIO_COOK) {
 
-    xprintf (this->stream->xine, XINE_VERBOSITY_DEBUG,
-             "ffmpeg_audio_dec: using parser\n");
-
-    this->parser_context = av_parser_init(this->codec->id);
-    if (!this->parser_context) {
+    this->parser_context = av_parser_init (this->codec->id);
+    if (this->parser_context) {
+      xprintf (this->stream->xine, XINE_VERBOSITY_DEBUG,
+        "ffmpeg_audio_dec: using parser\n");
+    } else {
       xprintf (this->stream->xine, XINE_VERBOSITY_LOG,
-               "ffmpeg_audio_dec: couldn't init parser\n");
+        "ffmpeg_audio_dec: couldn't init parser\n");
     }
   }
 #endif
@@ -341,6 +361,7 @@ static int ff_audio_open_codec(ff_audio_decoder_t *this, unsigned int codec_type
 
   this->decoder_ok = 1;
 
+  xine_pts_queue_reset (this->pts_queue);
   return 1;
 }
 
@@ -510,16 +531,75 @@ static void ff_audio_output_close(ff_audio_decoder_t *this)
   this->ao_mode = 0;
 }
 
+static unsigned int ff_list_channels (uint8_t *list, uint64_t map) {
+  unsigned int n, bit;
+
+  for (n = bit = 0; map; map >>= 1, bit++) {
+    uint32_t b = map & 1;
+
+    list[n] = bit;
+    n += b;
+  }
+  return n;
+}
+
 static void ff_map_channels (ff_audio_decoder_t *this) {
   uint64_t ff_map;
+  uint8_t ff_list[64];
+  unsigned int ff_num;
+  const char *type = "native";
   int caps = this->stream->audio_out->get_capabilities (this->stream->audio_out);
 
+#if XFF_AUDIO_CHANNEL_LAYOUT < 2
+
   /* safety kludge for very old libavcodec */
-#ifdef AV_CH_FRONT_LEFT
+#  ifdef AV_CH_FRONT_LEFT
   ff_map = this->context->channel_layout;
   if (!ff_map) /* wma2 bug */
-#endif
+#  endif
     ff_map = ((uint64_t)1 << this->context->channels) - 1;
+  ff_num = ff_list_channels (ff_list, ff_map);
+
+#else /* XFF_AUDIO_CHANNEL_LAYOUT == 2 */
+
+  ff_num = this->context->ch_layout.nb_channels;
+  if (ff_num > (int)(sizeof (ff_list) / sizeof (ff_list[0])))
+    ff_num = sizeof (ff_list) / sizeof (ff_list[0]);
+  switch (this->context->ch_layout.order) {
+    const AVChannelCustom *cmap;
+    unsigned int i;
+
+    case AV_CHANNEL_ORDER_UNSPEC:
+      type = "unknown";
+      goto _fallback;
+
+    case AV_CHANNEL_ORDER_NATIVE:
+      ff_map = this->context->ch_layout.u.mask;
+      if (!ff_map) /* wma2 bug */
+        ff_map = ((uint64_t)1 << ff_num) - 1;
+      ff_num = ff_list_channels (ff_list, ff_map);
+      break;
+
+    case AV_CHANNEL_ORDER_CUSTOM:
+      type = "custom";
+      if (!(cmap = this->context->ch_layout.u.map))
+        goto _fallback;
+      ff_map = 0;
+      for (i = 0; i < ff_num; i++) {
+        ff_list[i] = cmap[i].id;
+        ff_map |= (uint64_t)1 << ff_list[i];
+      }
+      break;
+
+    default:
+      type = "unsupported";
+      /* fall through */
+    _fallback:
+      ff_map = ((uint64_t)1 << ff_num) - 1;
+      ff_num = ff_list_channels (ff_list, ff_map);
+  }
+
+#endif
 
   if ((caps != this->ao_caps) || (ff_map != this->ff_map)) {
     unsigned int i, j;
@@ -545,7 +625,7 @@ static void ff_map_channels (ff_audio_decoder_t *this) {
 
     this->ao_caps     = caps;
     this->ff_map      = ff_map;
-    this->ff_channels = this->context->channels;
+    this->ff_channels = ff_num;
 
     /* silence out */
     for (i = 0; i < MAX_CHANNELS; i++)
@@ -559,20 +639,23 @@ static void ff_map_channels (ff_audio_decoder_t *this) {
       this->left[0] = this->right[0] = 0;
       tries = wishlist + 0 * num_modes;
     } else if (this->ff_channels == 2) { /* stereo */
+      /* FIXME: libxine does not yet support audio selection _after_ decoding.
+       * For now, treat the most common "dual mono" case as stereo. */
       name_map[0] = 0;
       name_map[1] = 1;
       this->left[0] = 0;
       this->right[0] = 1;
       tries = wishlist + 1 * num_modes;
     } else {
-      for (i = j = 0; i < sizeof (base_map) / sizeof (base_map[0]); i++) {
-        if ((ff_map >> i) & 1) {
-          int8_t target = base_map[i];
-          if ((target >= 0) && (this->map[target] < 0))
-            this->map[target] = j;
-          name_map[j] = i; /* for debug output below */
-          j++;
-        }
+      for (i = 0; i < ff_num; i++) {
+        int8_t target;
+        uint32_t num = ff_list[i];
+        if (num >= sizeof (base_map) / sizeof (base_map[0]))
+          continue;
+        target = base_map[num];
+        if ((target >= 0) && (this->map[target] < 0))
+          this->map[target] = i;
+        name_map[i] = num; /* for debug output below */
       }
       this->left[0]  = this->map[0] < 0 ? 0 : this->map[0];
       this->map[0]   = -1;
@@ -624,8 +707,8 @@ static void ff_map_channels (ff_audio_decoder_t *this) {
         "rear center",
         "side left", "side right"
       };
-      int8_t buf[200];
-      int p = sprintf (buf, "ff_audio_dec: channel layout: ");
+      int8_t buf[256];
+      int p = sprintf (buf, "ff_audio_dec: %s channel layout: ", type);
       int8_t *indx = this->left;
       for (i = 0; i < 2; i++) {
         buf[p++] = '[';
@@ -644,24 +727,29 @@ static void ff_map_channels (ff_audio_decoder_t *this) {
   }
 }
 
-#define CLIP_16(v) ((v + 0x8000) & ~0xffff ? (v >> 31) ^ 0x7fff : v)
+static int ff_audio_parse (ff_audio_decoder_t *this) {
+  int offs, parser_consumed;
 
-static int ff_audio_decode (ff_audio_decoder_t *this,
-  int16_t *decode_buffer, int *decode_buffer_size, uint8_t *buf, int size) {
-  int parsed = 1, consumed, parser_consumed;
-  int offs;
-
-  parser_consumed = ff_aac_mode_parse (this, buf, size, &offs);
+  this->pkt_sent = 0;
+  /* NOTE #1: our own parser uses this->buf for efficiancy. when it says 0,
+   * keep remaining bytes, and add more later. */
+  parser_consumed = ff_aac_mode_parse (this, this->parse.buf, this->parse.len, &offs);
   if (parser_consumed < 0) {
-    *decode_buffer_size = 0;
-    return offs;
+    this->decode.buf = NULL;
+    this->decode.len = 0;
+    this->parse.buf += offs;
+    this->parse.len -= offs;
+    return 0;
   } else if (parser_consumed > 0) {
-    buf += offs;
-    size = parser_consumed - offs;
+    this->decode.buf = this->parse.buf + offs;
+    this->decode.len = parser_consumed - offs;
+    this->parse.buf += parser_consumed;
+    this->parse.len -= parser_consumed;
+    return 1;
   }
-
+  /* parser_consumed == 0 */
 #if XFF_PARSE > 1
-  else
+  /* NOTE #2: ffmpeg parser uses its own buf, and thus consumes all. */
   if (this->parser_context) {
     uint8_t *outbuf;
     int      outsize;
@@ -674,48 +762,85 @@ static int ff_audio_decode (ff_audio_decoder_t *this,
      * and so on, with no need for warnings. */
     do {
       int ret = av_parser_parse2 (this->parser_context, this->context,
-        &outbuf, &outsize, buf, size, 0, 0, 0);
+        &outbuf, &outsize, this->parse.buf, this->parse.len, 0, 0, 0);
       parser_consumed += ret;
-      buf             += ret;
-      size            -= ret;
-    } while (size > 0 && outsize <= 0);
-
+      this->parse.buf += ret;
+      this->parse.len -= ret;
+    } while (this->parse.len && (outsize <= 0));
     /* nothing to decode ? */
     if (outsize <= 0) {
-      *decode_buffer_size = 0;
-      return parser_consumed;
+      this->decode.len = 0;
+      return 0;
     }
-
     /* decode next packet */
-    buf  = outbuf;
-    size = outsize;
+    this->decode.buf = outbuf;
+    this->decode.len = outsize;
+    return 1;
   }
 #endif /* XFF_PARSE > 1 */
-  else parsed = 0;
+  this->decode.buf = this->parse.buf;
+  this->decode.len = this->parse.len;
+  return 1;
+}
 
-#if XFF_AUDIO > 2
-  this->avpkt->data = buf;
-  this->avpkt->size = size;
-  this->avpkt->flags = AV_PKT_FLAG_KEY;
-#  if XFF_AUDIO > 3
-  int got_frame;
+static void ff_audio_unparse (ff_audio_decoder_t *this) {
+  if (this->decode.buf && this->parse.buf
+    && (this->decode.buf >= this->parse.buf)
+    && (this->decode.buf <= this->parse.buf + this->parse.len)) {
+    /* parser just mapped through the input buf. post back. */
+    this->parse.len = (this->parse.buf + this->parse.len) - this->decode.buf;
+    this->parse.buf = this->decode.buf;
+  }
+}
+
+#define CLIP_16(v) ((v + 0x8000) & ~0xffff ? (v >> 31) ^ 0x7fff : v)
+
+static int ff_audio_decode (ff_audio_decoder_t *this) {
+  int16_t *decode_buffer = (int16_t *)ASSUME_ALIGNED_2 (this->send.buf, 2);
+  int consumed, got_frame = 0;
+#if XFF_AUDIO >= 4
   float gain = this->class->gain;
+#endif
+#if XFF_AUDIO >= 3
+  this->avpkt->data = this->decode.buf;
+  this->avpkt->size = this->decode.len;
+  this->avpkt->flags = AV_PKT_FLAG_KEY;
+#  if XFF_AUDIO >= 4
   if (!this->av_frame)
     this->av_frame = XFF_ALLOC_FRAME ();
-#   if XFF_AUDIO == 5
-  {
+#    if XFF_AUDIO == 5
+  if (!this->pkt_sent) {
     int err = avcodec_send_packet (this->context, this->avpkt);
     /* xprintf (this->stream->xine, XINE_VERBOSITY_DEBUG, "ff_audio_dec: send (%d) = %d.\n", (int)size, err); */
-    /* multiple frames per packet */
-    consumed = (err >= 0) ? size : ((err == AVERROR (EAGAIN)) ? 0 : err);
-    /* that calls av_frame_unref () first. */
-    err = avcodec_receive_frame (this->context, this->av_frame);
-    /* xprintf (this->stream->xine, XINE_VERBOSITY_DEBUG, "ff_audio_dec: recv () = %d.\n", err); */
-    got_frame = (err == 0);
+    /* NOTE: multiple frames per packet should now be avoided,
+     * we no longer know the individual frame sizes here.
+     * kludge: consume 1 symbolic byte. */
+    if (err >= 0) {
+      consumed = 1;
+      this->pkt_sent = 1;
+    } else {
+      consumed = (err == AVERROR (EAGAIN)) ? 0 : err;
+    }
+  } else {
+    consumed = 1;
   }
-#   else
+  {
+    /* that calls av_frame_unref () first. */
+    int err = avcodec_receive_frame (this->context, this->av_frame);
+    /* xprintf (this->stream->xine, XINE_VERBOSITY_DEBUG, "ff_audio_dec: recv () = %d.\n", err); */
+    if (err != 0) {
+      /* now, these are all frames from this packet. */
+      this->decode.buf += this->decode.len;
+      this->decode.len = 0;
+      this->send.len = 0;
+      this->pkt_sent = 0;
+      return 0;
+    }
+    got_frame = 1;
+  }
+#    else
   consumed = avcodec_decode_audio4 (this->context, this->av_frame, &got_frame, this->avpkt);
-#   endif
+#    endif
   if ((consumed >= 0) && got_frame) {
     /* setup may have altered while decoding */
     ff_map_channels (this);
@@ -725,10 +850,10 @@ static int ff_audio_decode (ff_audio_decoder_t *this,
     int channels = this->ao_channels;
     int bytes, i, j, shift = this->downmix_shift;
     /* limit buffer */
-    if (*decode_buffer_size < samples * channels * 2)
-      samples = *decode_buffer_size / (channels * 2);
+    if ((int)this->send.len < samples * channels * 2)
+      samples = this->send.len / (channels * 2);
     bytes = samples * channels * 2;
-    *decode_buffer_size = bytes;
+    this->send.len = bytes;
     /* TJ. convert to packed int16_t while respecting the user's speaker arrangement.
        I tried to speed up and not to pull in libswresample. */
     for (i = 2; i < channels; i++) if (this->map[i] < 0) {
@@ -746,13 +871,13 @@ static int ff_audio_decode (ff_audio_decoder_t *this,
     const stype *p1, *p2, *p3, *p4;\
     int i, sstep;\
     int8_t *x = idx;\
-    int16_t *dptr = (int16_t *)decode_buffer + dindx;\
+    int16_t *dptr = decode_buffer + dindx;\
     if (planar) {\
-      p1 = (stype *)this->av_frame->extended_data[x[0]];\
+      p1 = (stype *)ASSUME_ALIGNED_2 (this->av_frame->extended_data[x[0]], sizeof (stype));\
       if (!p1) break;\
       sstep = 1;\
     } else {\
-      p1 = (stype *)this->av_frame->extended_data[0];\
+      p1 = (stype *)ASSUME_ALIGNED_2 (this->av_frame->extended_data[0], sizeof (stype));\
       if (!p1) break;\
       p1 += x[0];\
       sstep = this->ff_channels;\
@@ -768,10 +893,10 @@ static int ff_audio_decode (ff_audio_decoder_t *this,
       break;\
     }\
     if (planar) {\
-      p2 = (stype *)this->av_frame->extended_data[x[1]];\
+      p2 = (stype *)ASSUME_ALIGNED_2 (this->av_frame->extended_data[x[1]], sizeof (stype));\
       if (!p2) break;\
     } else\
-      p2 = (stype *)this->av_frame->extended_data[0] + x[1];\
+      p2 = (stype *)ASSUME_ALIGNED_2 (this->av_frame->extended_data[0], sizeof (stype)) + x[1];\
     if (num == 2) {\
       for (i = 0; i < samples; i++) {\
         int32_t v = MIX_FIX(*p2);\
@@ -786,10 +911,10 @@ static int ff_audio_decode (ff_audio_decoder_t *this,
       break;\
     }\
     if (planar) {\
-      p3 = (stype *)this->av_frame->extended_data[x[2]];\
+      p3 = (stype *)ASSUME_ALIGNED_2 (this->av_frame->extended_data[x[2]], sizeof (stype));\
       if (!p3) break;\
     } else\
-      p3 = (stype *)this->av_frame->extended_data[0] + x[2];\
+      p3 = (stype *)ASSUME_ALIGNED_2 (this->av_frame->extended_data[0], sizeof (stype)) + x[2];\
     if (num == 3) {\
       for (i = 0; i < samples; i++) {\
         int32_t v = MIX_FIX(*p2);\
@@ -806,10 +931,10 @@ static int ff_audio_decode (ff_audio_decoder_t *this,
       break;\
     }\
     if (planar) {\
-      p4 = (stype *)this->av_frame->extended_data[x[3]];\
+      p4 = (stype *)ASSUME_ALIGNED_2 (this->av_frame->extended_data[x[3]], sizeof (stype));\
       if (!p4) break;\
     } else\
-      p4 = (stype *)this->av_frame->extended_data[0] + x[3];\
+      p4 = (stype *)ASSUME_ALIGNED_2 (this->av_frame->extended_data[0], sizeof (stype)) + x[3];\
     for (i = 0; i < samples; i++) {\
       int32_t v = MIX_FIX(*p2);\
       p2       += sstep;\
@@ -878,13 +1003,13 @@ static int ff_audio_decode (ff_audio_decoder_t *this,
     int i, sstep;\
     float gain3;\
     int8_t *x = idx;\
-    int16_t *dptr = (int16_t *)decode_buffer + dindx;\
+    int16_t *dptr = decode_buffer + dindx;\
     if (planar) {\
-      p1 = (stype *)this->av_frame->extended_data[x[0]];\
+      p1 = (stype *)ASSUME_ALIGNED_2 (this->av_frame->extended_data[x[0]], sizeof (stype));\
       if (!p1) break;\
       sstep = 1;\
     } else {\
-      p1 = (stype *)this->av_frame->extended_data[0];\
+      p1 = (stype *)ASSUME_ALIGNED_2 (this->av_frame->extended_data[0], sizeof (stype));\
       if (!p1) break;\
       p1 += x[0];\
       sstep = this->ff_channels;\
@@ -900,10 +1025,10 @@ static int ff_audio_decode (ff_audio_decoder_t *this,
     }\
     gain3 = gain * 0.7071;\
     if (planar) {\
-      p2 = (stype *)this->av_frame->extended_data[x[1]];\
+      p2 = (stype *)ASSUME_ALIGNED_2 (this->av_frame->extended_data[x[1]], sizeof (stype));\
       if (!p2) break;\
     } else\
-      p2 = (stype *)this->av_frame->extended_data[0] + x[1];\
+      p2 = (stype *)ASSUME_ALIGNED_2 (this->av_frame->extended_data[0], sizeof (stype)) + x[1];\
     if (num == 2) {\
       for (i = 0; i < samples; i++) {\
         int32_t v = (*p1) * gain + (*p2) * gain3;\
@@ -915,10 +1040,10 @@ static int ff_audio_decode (ff_audio_decoder_t *this,
       break;\
     }\
     if (planar) {\
-      p3 = (stype *)this->av_frame->extended_data[x[2]];\
+      p3 = (stype *)ASSUME_ALIGNED_2 (this->av_frame->extended_data[x[2]], sizeof (stype));\
       if (!p3) break;\
     } else\
-      p3 = (stype *)this->av_frame->extended_data[0] + x[2];\
+      p3 = (stype *)ASSUME_ALIGNED_2 (this->av_frame->extended_data[0], sizeof (stype)) + x[2];\
     if (num == 3) {\
       for (i = 0; i < samples; i++) {\
         int32_t v = (*p1) * gain + (*p2 + *p3) * gain3;\
@@ -931,10 +1056,10 @@ static int ff_audio_decode (ff_audio_decoder_t *this,
       break;\
     }\
     if (planar) {\
-      p4 = (stype *)this->av_frame->extended_data[x[3]];\
+      p4 = (stype *)ASSUME_ALIGNED_2 (this->av_frame->extended_data[x[3]], sizeof (stype));\
       if (!p4) break;\
     } else\
-      p4 = (stype *)this->av_frame->extended_data[0] + x[3];\
+      p4 = (stype *)ASSUME_ALIGNED_2 (this->av_frame->extended_data[0], sizeof (stype)) + x[3];\
     for (i = 0; i < samples; i++) {\
       int32_t v = (*p1) * gain + (*p2 + *p3 + *p4) * gain3;\
       p1       += sstep;\
@@ -968,38 +1093,49 @@ static int ff_audio_decode (ff_audio_decoder_t *this,
         v += *p++;
         *q++ = v >> 1;
       }
-      *decode_buffer_size = samples * 2;
+      this->send.len = samples * 2;
     }
-  } else *decode_buffer_size = 0;
-#  else
-  consumed = avcodec_decode_audio3 (this->context, decode_buffer, decode_buffer_size, this->avpkt);
+  } else { /* !((consumed >= 0) && got_frame) */
+    this->send.len = 0;
+  }
+#  else /* XFF_AUDIO < 4 */
+  {
+    int slen = this->send.len;
+    consumed = avcodec_decode_audio3 (this->context, this->send.buf, &slen, this->avpkt);
+    if (slen > 0)
+      this->send.len = slen;
+  }
+  got_frame = consumed >= 0;
   ff_map_channels (this);
 #  endif
-#else
-  consumed = avcodec_decode_audio2 (this->context, decode_buffer, decode_buffer_size, buf, size);
+#else /* #if XFF_AUDIO < 3 */
+  {
+    int slen = this->send.len;
+    consumed = avcodec_decode_audio2 (this->context, this->send.buf, &slen, this->decode.buf, this->decode.len);
+    if (slen > 0)
+      this->send.len = slen;
+  }
+  got_frame = consumed >= 0;
   ff_map_channels (this);
 #endif
 
-  if (consumed < 0) {
+  if (consumed >= 0) {
+    this->decode.buf += consumed;
+    this->decode.len -= consumed;
+    return got_frame;
+  } else {
+    this->decode.buf += this->decode.len;
+    this->decode.len = 0;
+    this->send.len = 0;
     xprintf (this->stream->xine, XINE_VERBOSITY_DEBUG,
-             "ffmpeg_audio_dec: error decompressing audio frame (%d)\n", consumed);
-  } else if (parser_consumed && consumed != size) {
-
-    xprintf (this->stream->xine, XINE_VERBOSITY_DEBUG,
-             "ffmpeg_audio_dec: decoder didn't consume all data\n");
+      "ffmpeg_audio_dec: error decompressing audio frame (%d)\n", consumed);
+    return 0;
   }
-
-  return parsed ? parser_consumed : consumed;
 }
 
 static void ff_audio_decode_data (audio_decoder_t *this_gen, buf_element_t *buf) {
 
   ff_audio_decoder_t *this = xine_container_of(this_gen, ff_audio_decoder_t, audio_decoder);
-  int bytes_consumed;
-  int decode_buffer_size;
-  int out;
-  audio_buffer_t *audio_buffer;
-  int bytes_to_send;
   unsigned int codec_type = buf->type & (BUF_MAJOR_MASK | BUF_DECODER_MASK);
 
   if (buf->decoder_flags & BUF_FLAG_SPECIAL) {
@@ -1025,193 +1161,200 @@ static void ff_audio_decode_data (audio_decoder_t *this_gen, buf_element_t *buf)
     ff_audio_ensure_buffer_size(this, this->size + buf->size);
     xine_fast_memcpy (&this->buf[this->size], buf->content, buf->size);
     this->size += buf->size;
+    xine_pts_queue_put (this->pts_queue, buf->size, buf->pts);
 
     if (this->parser_context || buf->decoder_flags & BUF_FLAG_FRAME_END)  { /* time to decode a frame */
-      int offset = 0;
-
       /* pad input data */
-      memset(this->buf + this->size, 0, AV_INPUT_BUFFER_PADDING_SIZE);
+      memset (this->buf + this->size, 0, AV_INPUT_BUFFER_PADDING_SIZE);
+      this->parse.buf = this->buf;
+      this->parse.len = this->size;
 
-      while (this->size > 0) {
-
-        decode_buffer_size = AVCODEC_MAX_AUDIO_FRAME_SIZE;
-
-        bytes_consumed = ff_audio_decode (this, (int16_t *)this->decode_buffer, &decode_buffer_size,
-          &this->buf[offset], this->size);
-        if (bytes_consumed < 0)
+      while (this->parse.len) {
+        if (!ff_audio_parse (this))
           break;
 
-        /* NOTE #1: our own parser uses this->buf for efficiancy. when it says 0,
-         * keep remaining bytes, and add more later. */
-        /* NOTE #2: ffmpeg parser uses its own buf, and thus consumes all. */
-        offset     += bytes_consumed;
-        this->size -= bytes_consumed;
-        if (decode_buffer_size <= 0) {
-          if (bytes_consumed > 0)
-            continue;
-          /* nothing used and nothing sent??
-           * a) ADTS probe running (< 16k bytes)
-           * b) we can play this all day, or drop the undigestible after a while. */
-          if (this->size >= (64 << 10))
-            this->size = 0;
-          break;
-        }
+        while (this->decode.len) {
+          audio_buffer_t *audio_buffer;
+          int bytes_to_send;
+          int64_t pts;
+          uint32_t have_len = this->decode.len, out;
 
-        if (this->ff_sample_rate != this->context->sample_rate ||
-            this->ao_mode        != this->new_mode) {
-          xprintf(this->stream->xine, XINE_VERBOSITY_LOG,
-                  _("ffmpeg_audio_dec: codec parameters changed\n"));
-          /* close if it was open, and always trigger 1 new open attempt below */
-          ff_audio_output_close(this);
-        }
+          this->send.buf = this->decode_buffer;
+          this->send.len = AVCODEC_MAX_AUDIO_FRAME_SIZE;
+          if (!ff_audio_decode (this)) {
+            have_len -= this->decode.len;
+            xine_pts_queue_get (this->pts_queue, have_len);
+            if (have_len > 0)
+              continue;
+            /* nothing used and nothing sent??
+             * a) ADTS probe running (< 16k bytes)
+             * b) we can play this all day, or drop the undigestible after a while. */
+            if (this->size >= (64 << 10)) {
+              this->decode.buf += this->decode.len;
+              this->decode.len = 0;
+              xine_pts_queue_get (this->pts_queue, this->parse.len);
+              this->parse.buf += this->parse.len;
+              this->parse.len = 0;
+            }
+            break;
+          }
+          have_len -= this->decode.len;
+          pts = xine_pts_queue_get (this->pts_queue, have_len);
 
-	if (!this->output_open) {
-	  if (!this->ff_sample_rate || !this->ao_mode) {
-	    this->ff_sample_rate = this->context->sample_rate;
-	    this->ao_mode        = this->new_mode;
-	  }
-	  if (!this->ff_sample_rate || !this->new_mode) {
-	    xprintf(this->stream->xine, XINE_VERBOSITY_LOG,
-		    _("ffmpeg_audio_dec: cannot read codec parameters from packet\n"));
-	    /* try to decode next packet. */
-	    /* there shouldn't be any output yet */
-	    decode_buffer_size = 0;
-	    /* pts applies only to first audio packet */
-	    buf->pts = 0;
-	  } else {
-	    this->output_open = (this->stream->audio_out->open) (this->stream->audio_out,
-								 this->stream, 16, this->ff_sample_rate,
-								 this->ao_mode);
-	    if (!this->output_open) {
-	      xprintf(this->stream->xine, XINE_VERBOSITY_LOG,
-		      "ffmpeg_audio_dec: error opening audio output\n");
-	      this->size = 0;
-	      return;
-	    }
-	  }
-	}
+          if ((this->ff_sample_rate != this->context->sample_rate)
+            || (this->ao_mode != this->new_mode)) {
+            xprintf (this->stream->xine, XINE_VERBOSITY_LOG,
+              _("ffmpeg_audio_dec: codec parameters changed\n"));
+            /* close if it was open, and always trigger 1 new open attempt below */
+            ff_audio_output_close (this);
+          }
+
+          if (!this->output_open) {
+            if (!this->ff_sample_rate || !this->ao_mode) {
+              this->ff_sample_rate = this->context->sample_rate;
+              this->ao_mode        = this->new_mode;
+            }
+            if (this->ff_sample_rate && this->new_mode) {
+              this->output_open = this->stream->audio_out->open (this->stream->audio_out,
+                this->stream, 16, this->ff_sample_rate, this->ao_mode);
+              if (!this->output_open) {
+                xprintf (this->stream->xine, XINE_VERBOSITY_LOG,
+                  "ffmpeg_audio_dec: error opening audio output\n");
+                this->size = 0;
+                return;
+              }
+            } else {
+              xprintf (this->stream->xine, XINE_VERBOSITY_LOG,
+                _("ffmpeg_audio_dec: cannot read codec parameters from packet\n"));
+              /* try to decode next packet. */
+              /* there shouldn't be any output yet */
+              this->send.len = 0;
+              /* pts applies only to first audio packet */
+              buf->pts = 0;
+            }
+          }
 
 #if XFF_AUDIO < 4
-        /* Old style postprocessing */
-        if (codec_type == BUF_AUDIO_WMAPRO) {
-          /* the above codecs output float samples, not 16-bit integers */
-          int samples = decode_buffer_size / sizeof(float);
-          float gain  = this->class->gain;
-          float *p    = (float *)this->decode_buffer;
-          int16_t *q  = (int16_t *)this->decode_buffer;
-          int i;
-          for (i = samples; i; i--) {
-            int v = *p++ * gain;
-            *q++ = CLIP_16 (v);
+          /* Old style postprocessing */
+          if (codec_type == BUF_AUDIO_WMAPRO) {
+            /* the above codecs output float samples, not 16-bit integers */
+            int samples = this->send.len / sizeof(float);
+            float gain  = this->class->gain;
+            float *p    = (float *)ASSUME_ALIGNED_2 (this->decode_buffer, 4);
+            int16_t *q  = (int16_t *)ASSUME_ALIGNED_2 (this->decode_buffer, 2);
+            int i;
+            for (i = samples; i; i--) {
+              int v = *p++ * gain;
+              *q++ = CLIP_16 (v);
+            }
+            this->send.len = samples * 2;
           }
-          decode_buffer_size = samples * 2;
-        }
 
-        if ((this->ao_channels != this->ff_channels) || (this->ao_channels > 2)) {
-          /* Channel reordering and/or mixing */
-          int samples     = decode_buffer_size / (this->ff_channels * 2);
-          int channels    = this->ao_channels;
-          int ff_channels = this->ff_channels;
-          int16_t *p      = (int16_t *)this->decode_buffer;
-          int16_t *q      = p;
-          int shift       = this->downmix_shift, i, j;
-          /* downmix mono output to stereo first */
-          if ((channels == 1) && (ff_channels > 1))
-            channels = 2;
-          /* move to end of buf for in-place editing */
-          p += AVCODEC_MAX_AUDIO_FRAME_SIZE - decode_buffer_size;
-          if (p >= q + decode_buffer_size)
-            xine_fast_memcpy (p, q, decode_buffer_size);
-          else
-            memmove (p, q, decode_buffer_size);
-          /* not very optimized but it only hits when playing multichannel audio through
-             old ffmpeg - and its still better than previous code there */
-          if (this->front_mixes < 2) {
-            /* just reorder and maybe upmix */
-            for (i = samples; i; i--) {
-              q[0] = p[0];
-              q[1] = p[this->right[0]];
-              for (j = 2; j < channels; j++)
-                q[j] = this->map[j] < 0 ? 0 : p[this->map[j]];
-              p += ff_channels;
-              q += channels;
-            }
-          } else {
-            /* downmix */
-            for (i = samples; i; i--) {
-              int left  = p[0];
-              int right = p[this->right[0]];
-              for (j = 1; j < this->front_mixes; j++) {
-                left  += p[this->left[j]];
-                right += p[this->right[j]];
+          if ((this->ao_channels != this->ff_channels) || (this->ao_channels > 2)) {
+            /* Channel reordering and/or mixing */
+            int samples     = this->send.len / (this->ff_channels * 2);
+            int channels    = this->ao_channels;
+            int ff_channels = this->ff_channels;
+            int16_t *p      = (int16_t *)ASSUME_ALIGNED_2 (this->decode_buffer, 2);
+            int16_t *q      = p;
+            int shift       = this->downmix_shift, i, j;
+            /* downmix mono output to stereo first */
+            if ((channels == 1) && (ff_channels > 1))
+              channels = 2;
+            /* move to end of buf for in-place editing */
+            p += AVCODEC_MAX_AUDIO_FRAME_SIZE - this->send.len;
+            if (p >= q + this->send.len)
+              xine_fast_memcpy (p, q, this->send.len);
+            else
+              memmove (p, q, this->send.len);
+            /* not very optimized but it only hits when playing multichannel audio through
+               old ffmpeg - and its still better than previous code there */
+            if (this->front_mixes < 2) {
+              /* just reorder and maybe upmix */
+              for (i = samples; i; i--) {
+                q[0] = p[0];
+                q[1] = p[this->right[0]];
+                for (j = 2; j < channels; j++)
+                  q[j] = this->map[j] < 0 ? 0 : p[this->map[j]];
+                p += ff_channels;
+                q += channels;
               }
-              left  >>= shift;
-              q[0]    = CLIP_16 (left);
-              right >>= shift;
-              q[1]    = CLIP_16 (right);
-              for (j = 2; j < channels; j++)
-                q[j] = this->map[j] < 0 ? 0 : p[this->map[j]] >> shift;
-              p += ff_channels;
-              q += channels;
+            } else {
+              /* downmix */
+              for (i = samples; i; i--) {
+                int left  = p[0];
+                int right = p[this->right[0]];
+                for (j = 1; j < this->front_mixes; j++) {
+                  left  += p[this->left[j]];
+                  right += p[this->right[j]];
+                }
+                left  >>= shift;
+                q[0]    = CLIP_16 (left);
+                right >>= shift;
+                q[1]    = CLIP_16 (right);
+                for (j = 2; j < channels; j++)
+                  q[j] = this->map[j] < 0 ? 0 : p[this->map[j]] >> shift;
+                p += ff_channels;
+                q += channels;
+              }
             }
-          }
-          /* final mono downmix */
-          if (channels > this->ao_channels) {
-            p = (int16_t *)this->decode_buffer;
-            q = p;
-            for (i = samples; i; i--) {
-              int v = *p++;
-              v += *p++;
-              *q++ = v >> 1;
+            /* final mono downmix */
+            if (channels > this->ao_channels) {
+              p = (int16_t *)ASSUME_ALIGNED_2 (this->decode_buffer, 2);
+              q = p;
+              for (i = samples; i; i--) {
+                int v = *p++;
+                v += *p++;
+                *q++ = v >> 1;
+              }
             }
+            this->send.len = samples * this->ao_channels * 2;
           }
-          decode_buffer_size = samples * this->ao_channels * 2;
-        }
 #endif
 
-        /* dispatch the decoded audio */
-        out = 0;
-        while (out < decode_buffer_size) {
-          int stream_status = xine_get_status(this->stream);
+          /* dispatch the decoded audio */
+          out = 0;
+          while (out < this->send.len) {
+            int stream_status = xine_get_status (this->stream);
 
-	  if (stream_status == XINE_STATUS_QUIT || stream_status == XINE_STATUS_STOP) {
-	    this->size = 0;
-            return;
-	  }
+            if ((stream_status == XINE_STATUS_QUIT) || (stream_status == XINE_STATUS_STOP)) {
+              this->size = 0;
+              return;
+            }
 
-          audio_buffer =
-            this->stream->audio_out->get_buffer (this->stream->audio_out);
-          if (audio_buffer->mem_size == 0) {
-            xprintf (this->stream->xine, XINE_VERBOSITY_DEBUG,
-                     "ffmpeg_audio_dec: Help! Allocated audio buffer with nothing in it!\n");
-            return;
-          }
+            audio_buffer = this->stream->audio_out->get_buffer (this->stream->audio_out);
+            if (audio_buffer->mem_size == 0) {
+              xprintf (this->stream->xine, XINE_VERBOSITY_DEBUG,
+                "ffmpeg_audio_dec: Help! Allocated audio buffer with nothing in it!\n");
+              return;
+            }
 
-          /* fill up this buffer */
-          if ((decode_buffer_size - out) > audio_buffer->mem_size)
-            bytes_to_send = audio_buffer->mem_size;
-          else
-            bytes_to_send = decode_buffer_size - out;
+            /* fill up this buffer */
+            if ((int)(this->send.len - out) > audio_buffer->mem_size)
+              bytes_to_send = audio_buffer->mem_size;
+            else
+              bytes_to_send = this->send.len - out;
 
-          xine_fast_memcpy(audio_buffer->mem, &this->decode_buffer[out], bytes_to_send);
-          out += bytes_to_send;
+            xine_fast_memcpy (audio_buffer->mem, &this->decode_buffer[out], bytes_to_send);
+            out += bytes_to_send;
 
-          /* byte count / 2 (bytes / sample) / channels */
-          audio_buffer->num_frames = bytes_to_send / 2 / this->ao_channels;
-
-          audio_buffer->vpts = buf->pts;
-
-          buf->pts = 0;  /* only first buffer gets the real pts */
-          this->stream->audio_out->put_buffer (this->stream->audio_out,
-            audio_buffer, this->stream);
-        }
-      }
+            /* byte count / 2 (bytes / sample) / channels */
+            audio_buffer->num_frames = bytes_to_send / 2 / this->ao_channels;
+            audio_buffer->vpts = pts;
+            pts = 0;  /* only first buffer gets the real pts */
+            this->stream->audio_out->put_buffer (this->stream->audio_out, audio_buffer, this->stream);
+          } /* output loop */
+        } /* decode loop */
+        ff_audio_unparse (this);
+      } /* parse loop */
+      this->size = this->parse.len;
       if (this->size > 0) {
-        if (offset > 0) {
-          if (offset >= this->size)
-            memcpy (this->buf, this->buf + offset, this->size);
+        int offs = this->parse.buf - this->buf;
+        if (offs > 0) {
+          if (offs >= this->size)
+            memcpy (this->buf, this->buf + offs, this->size);
           else
-            memmove (this->buf, this->buf + offset, this->size);
+            memmove (this->buf, this->buf + offs, this->size);
         }
       }
     }
@@ -1242,6 +1385,7 @@ static void ff_audio_reset (audio_decoder_t *this_gen) {
 
   ff_audio_reset_parser(this);
   ff_aac_mode_set (this, 1);
+  xine_pts_queue_reset (this->pts_queue);
 }
 
 static void ff_audio_discontinuity (audio_decoder_t *this_gen) {
@@ -1289,6 +1433,8 @@ static void ff_audio_dispose (audio_decoder_t *this_gen) {
   XFF_FREE_CONTEXT (this->context);
 
   XFF_PACKET_UNREF (this->avpkt);
+
+  xine_pts_queue_delete (&this->pts_queue);
 
   free (this_gen);
 }
@@ -1345,6 +1491,8 @@ static audio_decoder_t *ff_audio_open_plugin (audio_decoder_class_t *class_gen, 
     free (this);
     return NULL;
   } while (0);
+
+  this->pts_queue = xine_pts_queue_new ();
 
   return &this->audio_decoder;
 }

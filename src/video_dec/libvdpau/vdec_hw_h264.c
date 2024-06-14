@@ -1,5 +1,5 @@
 /* kate: space-indent on; indent-width 2; mixedindent off; indent-mode cstyle; remove-trailing-space on;
- * Copyright (C) 2008-2021 the xine project
+ * Copyright (C) 2008-2022 the xine project
  * Copyright (C) 2008 Christophe Thommeret <hftom@free.fr>
  *
  * This file is part of xine, a free video player.
@@ -437,6 +437,7 @@ static void _vdec_hw_h264_frame_new (vdec_hw_h264_t *vdec, vdec_hw_h264_frame_in
   _vdec_hw_h264_frame_free (vdec, frame, 0);
   if (!frame->f.user_data && vdec->frame_new) {
     vdec->frame_new (vdec->user_data, &frame->f);
+    frame->f.bad_frame = 0;
     frame->drawn = 0;
     vdec->user_frames++;
     if (vdec->user_frames > (int32_t)vdec->ref_frames_max + 1)
@@ -1689,6 +1690,11 @@ static int _vdec_hw_h264_check_ref_list (vdec_hw_h264_t *vdec) {
   }
 
   if (lps->slice_type != SLICE_TYPE_I) {
+    if (vdec->ref_frames_used <= 0) {
+      vdec->logg (vdec->user_data, VDEC_HW_H264_LOGG_INFO,
+        LOG_MODULE ": first frame after seek is type %s??\n",
+        (lps->slice_type == SLICE_TYPE_B) ? "B" : "P");
+    }
     if (prefs < (int)(lps->num_ref_idx_l0_active_minus1 + 1))
       bad_frame = 1;
     if (lps->slice_type == SLICE_TYPE_B) {
@@ -1699,9 +1705,11 @@ static int _vdec_hw_h264_check_ref_list (vdec_hw_h264_t *vdec) {
 
   if (bad_frame) {
     vdec->logg (vdec->user_data, VDEC_HW_H264_LOGG_ERR,
-      LOG_MODULE ": Missing refframes, dropping. nrf=%d lo=%d prefs=%d l1=%d brefs=%d type=%d (%d fps)\n",
-        (int)sps->ref_frames_used, (int)lps->num_ref_idx_l0_active_minus1 + 1, (int)prefs,
-        (int)lps->num_ref_idx_l1_active_minus1 + 1, (int)brefs, (int)lps->slice_type, fps);
+      LOG_MODULE ": pts %" PRId64 ": Missing ref frames. refs=%d l0=%d prefs=%d l1=%d brefs=%d type=%s (%d fps)\n",
+        vdec->seq.pic_pts, sps->ref_frames_used,
+        (int)lps->num_ref_idx_l0_active_minus1 + 1, prefs,
+        (int)lps->num_ref_idx_l1_active_minus1 + 1, brefs,
+        (lps->slice_type == SLICE_TYPE_B) ? "B" : "P", fps);
   }
 /*
   else {
@@ -1717,7 +1725,7 @@ static int _vdec_hw_h264_check_ref_list (vdec_hw_h264_t *vdec) {
   return bad_frame;
 }
 
-static void _vdec_hw_h264_render (vdec_hw_h264_t *vdec, int bad_frame) {
+static int _vdec_hw_h264_render (vdec_hw_h264_t *vdec, int bad_frame) {
   int i, j;
   vdec_hw_h264_frame_int_t *frame;
   vdec_hw_h264_sps_t *sps;
@@ -1743,10 +1751,10 @@ static void _vdec_hw_h264_render (vdec_hw_h264_t *vdec, int bad_frame) {
   lps = &vdec->seq.lps;
   pps = vdec->seq.pps[lps->pps_id];
   if (!pps)
-    return;
+    return 0;
   sps = vdec->seq.sps[pps->sps_id];
   if (!sps)
-    return;
+    return 0;
 
   frame->f.profile = sps->profile_idc;
   frame->f.level   = sps->level_idc;
@@ -1758,6 +1766,20 @@ static void _vdec_hw_h264_render (vdec_hw_h264_t *vdec, int bad_frame) {
     _vdec_hw_h264_frame_new (vdec, frame);
     vdec->seq.reset = 0;
   }
+
+  /* FIXME: I-frames need not be seek points. They can appear in the
+   * middle of a group of pictures (GOP), with frames after that
+   * reference frames before. However, many containers nevertheless
+   * mark _all_ I-frames as seekable. A seek may thus lead to a
+   * short period of missing ref frames.
+   * We can skip decoding here, which means extra artifacts.
+   * We can try to decode anyway, which may crash.
+   * We can wait for a real seek point, with a large gap.
+   * Any ideas? */
+  /*
+  if (bad_frame)
+    return 0;
+  */
 
   vdec->seq.info.field_order_cnt[0] = frame->TopFieldOrderCnt;
   vdec->seq.info.field_order_cnt[1] = frame->BottomFieldOrderCnt;
@@ -1834,19 +1856,28 @@ static void _vdec_hw_h264_render (vdec_hw_h264_t *vdec, int bad_frame) {
   }
 
   frame->f.info = &vdec->seq.info;
-  if (vdec->frame_render)
-    vdec->frame_render (vdec->user_data, &frame->f);
+  i = 1;
+  if (vdec->frame_render) {
+    i = vdec->frame_render (vdec->user_data, &frame->f);
+    if (!i) {
+      frame->f.bad_frame = 2;
+      vdec->logg (vdec->user_data, VDEC_HW_H264_LOGG_INFO,
+        LOG_MODULE ": pts %" PRId64 ": render failure.\n", vdec->seq.pic_pts);
+    }
+  }
   frame->f.info = NULL;
+  return i;
 }
 
-static void _vdec_hw_h264_decode_picture (vdec_hw_h264_t *vdec) {
+static int _vdec_hw_h264_decode_picture (vdec_hw_h264_t *vdec) {
   vdec_hw_h264_frame_int_t *cur_frame = &vdec->frames[MAX_REF_FRAMES];
   vdec_hw_h264_lps_t *lps = &vdec->seq.lps;
+  int res;
 
   if (cur_frame->missing_header || !vdec->seq.startup_frame) {
     _vdec_hw_h264_frame_free (vdec, cur_frame, 1);
     lprintf ("MISSING_HEADER or !startup_frame\n\n");
-    return;
+    return 0;
   }
 
   if (cur_frame->completed && cur_frame->field_pic_flag) {
@@ -1863,7 +1894,7 @@ static void _vdec_hw_h264_decode_picture (vdec_hw_h264_t *vdec) {
       _vdec_hw_h264_dpb_reset (vdec);
       cur_frame->missing_header = 1;
       vdec->seq.startup_frame = 0;
-      return;
+      return 0;
     }
   }
 
@@ -1879,7 +1910,7 @@ static void _vdec_hw_h264_decode_picture (vdec_hw_h264_t *vdec) {
   _vdec_hw_h264_ref_pic_list_reordering (vdec);
   lprintf ("............................. slices_count = %d\n", vdec->seq.slices_count);
 
-  _vdec_hw_h264_render (vdec, _vdec_hw_h264_check_ref_list (vdec));
+  res = _vdec_hw_h264_render (vdec, _vdec_hw_h264_check_ref_list (vdec));
 
   /* _vdec_hw_h264_dec_ref_pic_marking */
   _vdec_hw_h264_slice_header_post (vdec);
@@ -1905,14 +1936,15 @@ static void _vdec_hw_h264_decode_picture (vdec_hw_h264_t *vdec) {
     _vdec_hw_h264_frame_free (vdec, cur_frame, 1);
 
   lprintf ("\n___________________________________________________________________________________________\n\n");
+  return res;
 }
 
 static int _vdec_hw_h264_flush_slices (vdec_hw_h264_t *vdec, uint32_t new_type) {
   if (vdec->seq.slices_count && ((new_type != vdec->seq.slice_mode) || (vdec->seq.slices_count >= MAX_SLICES))) {
-    _vdec_hw_h264_decode_picture (vdec);
+    int res = _vdec_hw_h264_decode_picture (vdec);
     vdec->seq.slices_count = 0;
     vdec->seq.slice_mode = new_type;
-    return 1;
+    return res;
   }
   vdec->seq.slice_mode = new_type;
   return 0;
@@ -2406,4 +2438,3 @@ void vdec_hw_h264_delete (vdec_hw_h264_t **dec) {
 
   free (vdec);
 }
-

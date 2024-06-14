@@ -5,7 +5,7 @@ debian/tmp/usr/lib/*/xine/plugins/*/xineplug_*_vdpau*.so
 debian/tmp/usr/lib/*/xine/plugins/*/xineplug_vo_out_opengl.so
 debian/tmp/usr/lib/*/xine/plugins/*/xineplug_vo_out_opengl2.so
 debian/tmp/usr/lib/*/xine/plugins/*/xineplug_vo_out_sdl.so
-[linux-any] debian/tmp/usr/lib/*/xine/plugins/*/xineplug_vo_out_vaapi.so
+[!hurd-any] debian/tmp/usr/lib/*/xine/plugins/*/xineplug_vo_out_vaapi.so
 debian/tmp/usr/lib/*/xine/plugins/*/xineplug_vo_out_xcbshm.so
 debian/tmp/usr/lib/*/xine/plugins/*/xineplug_vo_out_xcbxv.so
 debian/tmp/usr/lib/*/xine/plugins/*/xineplug_vo_out_xdirectfb.so
@@ -17,7 +17,7 @@ debian/tmp/usr/lib/*/xine/plugins/*/xineplug_vo_out_xxmc.so
 debian/tmp/usr/lib/*/xine/plugins/*/xineplug_vo_gl_egl_x11.so
 debian/tmp/usr/lib/*/xine/plugins/*/xineplug_vo_gl_glx.so
 [linux-any] debian/tmp/usr/lib/*/xine/plugins/*/xineplug_hw_frame_vaapi.so
-debian/tmp/usr/lib/*/xine/plugins/*/xineplug_va_display_drm.so
-debian/tmp/usr/lib/*/xine/plugins/*/xineplug_va_display_glx.so
+[!hurd-any] debian/tmp/usr/lib/*/xine/plugins/*/xineplug_va_display_drm.so
+[!hurd-any] debian/tmp/usr/lib/*/xine/plugins/*/xineplug_va_display_glx.so
 [linux-any] debian/tmp/usr/lib/*/xine/plugins/*/xineplug_va_display_wl.so
-debian/tmp/usr/lib/*/xine/plugins/*/xineplug_va_display_x11.so
+[!hurd-any] debian/tmp/usr/lib/*/xine/plugins/*/xineplug_va_display_x11.so

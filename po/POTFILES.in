@@ -180,6 +180,7 @@ src/video_dec/libjpeg.c
 src/video_dec/libmpeg2new/xine_mpeg2new_decoder.c
 src/video_dec/libmpeg2/xine_mpeg2_decoder.c
 src/video_dec/libopenhevc.c
+src/video_dec/libvdpau/alterh264_decode.c
 src/video_dec/libvdpau/vdpau_h264.c
 src/video_dec/libvdpau/vdpau_mpeg12.c
 src/video_dec/libvdpau/vdpau_mpeg4.c
@@ -190,6 +191,7 @@ src/video_dec/rgb.c
 src/video_dec/yuv.c
 src/video_out/color_matrix.c
 src/video_out/opengl/xine_glx.c
+src/video_out/vaapi/xine_hw_frame_vaapi.c
 src/video_out/video_out_aa.c
 src/video_out/video_out_caca.c
 src/video_out/video_out_directfb.c

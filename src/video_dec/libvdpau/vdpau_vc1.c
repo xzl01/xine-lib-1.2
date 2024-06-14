@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2008-2020 the xine project
+ * Copyright (C) 2008-2023 the xine project
  * Copyright (C) 2008 Christophe Thommeret <hftom@free.fr>
  *
  * This file is part of xine, a free video player.
@@ -1171,7 +1171,7 @@ void *vc1_init_plugin (xine_t *xine, const void *data) {
     .open_plugin     = open_plugin,
     .identifier      = "vdpau_vc1",
     .description     =
-        N_("vdpau_vc1: vc1 decoder plugin using VDPAU hardware decoding.\n"
+        N_("VC-1/WMV3 decoder plugin using VDPAU hardware decoding.\n"
            "Must be used along with video_out_vdpau."),
     .dispose         = NULL,
   };

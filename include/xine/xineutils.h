@@ -30,6 +30,7 @@ extern "C" {
 #include <stddef.h>
 #include <pthread.h>
 
+#include <time.h>
 #ifdef WIN32
 #else
 #  include <sys/time.h>
@@ -206,7 +207,7 @@ extern void *(* xine_fast_memcpy)(void *to, const void *from, size_t len) XINE_P
 static inline void *xine_small_memcpy (void *to, const void *from, size_t len) {
   void *t2 = to;
   size_t l2 = len;
-#    if !defined(__clang__)
+#    if !defined(__clang__) && !defined(__cplusplus)
   __asm__ __volatile__ (
     "cld\n\trep movsb"
     : "=S" (from), "=D" (t2), "=c" (l2), "=m" (*(struct {char foo[len];} *)to)
@@ -766,6 +767,58 @@ char *xine_fast_string_set (char *fast_string, const char *text, size_t tsize) X
 int xine_fast_string_cmp (char *fast_string1, char *fast_string2);
 /** free a fast string if it is not application supplied. */
 void xine_fast_string_free (char **fast_string) XINE_PROTECTED;
+
+#define XINE_REF_STRING 1
+/** create or reuse a xine reference counted string, whose contents shall remain unchanged.
+ *  use len == -1 if not kown. */
+char *xine_ref_string_ref (const char *s, int len) XINE_PROTECTED;
+/** fast if s is a xine reference counted string. */
+size_t xine_ref_string_len (const char *s) XINE_PROTECTED;
+/** same as _x_freep if s is _not_ a xine reference counted string. */
+int xine_ref_string_unref (char **s) XINE_PROTECTED;
+
+/** stream parsers do delay data, but often do not care about the frame pts
+ *  that need to be delayed as well. this may help here. */
+#define XINE_PTS_QUEUE 1
+typedef struct xine_pts_queue_s xine_pts_queue_t;
+/** create a new instance. */
+xine_pts_queue_t *xine_pts_queue_new (void) XINE_PROTECTED;
+/** reset after a stream seek. */
+void xine_pts_queue_reset (xine_pts_queue_t *queue) XINE_PROTECTED;
+/** tell what the parser has consumed. pts == 0 if unknown. */
+void xine_pts_queue_put (xine_pts_queue_t *queue, size_t bytes, int64_t pts) XINE_PROTECTED;
+/** tell what the parser has delivered, and get the filtered pts or 0. */
+int64_t xine_pts_queue_get (xine_pts_queue_t *queue, size_t bytes) XINE_PROTECTED;
+/** you no longer need the queue. */
+void xine_pts_queue_delete (xine_pts_queue_t **queue) XINE_PROTECTED;
+
+/** xine timespec magic. */
+#define XINE_TS 1
+/** XINE_TS >= 1: Well.
+ *  libcurl.curl_getdate () fails on plain "01 January 1970 00:00:04 GMT".
+ *  shell.date fails on "2020-08-31T23:55:00.000+02:00".
+ *  here comes yet another "we can do better" attempt:
+ *  input:
+ *    ts: the fallback or relative base time.
+ *    string: the date/time in some halfway common format.
+ *  output:
+ *    ts: what we got.
+ *    return: 0 (OK) or some Exxx error code. */
+int xine_ts_from_string (struct timespec *ts, const char *string) XINE_PROTECTED;
+/** XINE_TS >= 1: a += b. */
+void xine_ts_add (struct timespec *a, const struct timespec *b) XINE_PROTECTED;
+/** XINE_TS >= 1: a -= b. */
+void xine_ts_sub (struct timespec *a, const struct timespec *b) XINE_PROTECTED;
+/** XINE_TS >= 1: ts * timebase. */
+int64_t xine_ts_to_timebase (const struct timespec *ts, uint32_t timebase) XINE_PROTECTED;
+
+/** xine rational numbers. */
+#define XINE_RATS 1
+typedef struct {
+  int64_t num, den;
+} xine_rats_t;
+/** XINE_RATS >= 1: shorten value. */
+void xine_rats_shorten (xine_rats_t *value) XINE_PROTECTED;
 
 /* don't harm following code */
 #ifdef extern

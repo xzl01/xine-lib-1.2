@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2000-2021 the xine project
+ * Copyright (C) 2000-2022 the xine project
  *
  * This file is part of xine, a free video player.
  *
@@ -39,8 +39,8 @@
 #include <xine/xine_internal.h>
 #include <xine/xineutils.h>
 #include <xine/input_plugin.h>
-#include "net_buf_ctrl.h"
 #include "input_helper.h"
+
 
 #define BUFSIZE                 1024
 
@@ -55,7 +55,7 @@ typedef struct {
 
   xine_t          *xine;
   xine_stream_t   *stream;
-  nbc_t           *nbc;
+  xine_nbc_t      *nbc;
   char            *mrl;
 
   int              fh;
@@ -297,7 +297,7 @@ static void stdin_plugin_dispose (input_plugin_t *this_gen ) {
   free (this->ring_buf);
 
   if (this->nbc)
-    nbc_close (this->nbc);
+    xine_nbc_close (this->nbc);
 
   if (this->fh >= 0) {
     if (this->fh != STDIN_FILENO) {
@@ -443,7 +443,7 @@ static input_plugin_t *stdin_class_get_instance (input_class_t *class_gen,
   /*
    * buffering control
    */
-  this->nbc = nbc_init (stream);
+  this->nbc = xine_nbc_init (stream);
   if (!this->nbc) {
     free (this);
     return NULL;

@@ -12,7 +12,7 @@ dnl ----------
 dnl find the pathname to the GNU or non-GNU assembler
 dnl based on AC_PROG_LD from libtool
 AC_DEFUN([CC_PROG_AS], [
-    AC_REQUIRE([LT_AC_PROG_SED])dnl
+    AC_REQUIRE([AC_PROG_SED])dnl
     AC_REQUIRE([AC_PROG_CC])dnl
     AC_REQUIRE([AM_PROG_AS])dnl
     AC_REQUIRE([AC_CANONICAL_HOST])dnl

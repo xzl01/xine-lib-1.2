@@ -1,5 +1,5 @@
 /*
- * Copyright (C) 2000-2021 the xine project
+ * Copyright (C) 2000-2023 the xine project
  *
  * This file is part of xine, a free video player.
  *
@@ -369,6 +369,56 @@ static void send_audio_amp_event_internal (xine_stream_private_t *stream) {
   xine_event_send (&stream->s, &event);
 }
 
+#if 0
+NOTE: the next few tables are more or less made with a web browser showing this:
+
+<html>
+<head>
+<title>xine audio level conversion</title>
+<meta http-equiv="Content-Type" content="text/html;charset=UTF-8" />
+</head>
+<body bgcolor=#aaaaaa>
+<b>DUMMY<br /></b>
+<script type=text/javascript>
+var i, j, line;
+document.write ("static const uint8_t tab_log_05_lin[201] = {<br />  ");
+line = "";
+for (i = 0; i <= 200; i++) {
+  j = Math.floor (Math.pow (2, (i - 100) / 12) * 100 + 0.5);
+  j = (j < 0) ? 0 : (j > 200) ? 200 : j;
+  line += j.toString () + "," + (((i + 1) % 10) ? "" : "<br />  ");
+}
+document.write (line + "<br />};<br />");
+document.write ("static const uint8_t tab_lin_log_05[201] = {<br />  ");
+line = "";
+for (i = 0; i <= 200; i++) {
+  j = Math.floor (100 + Math.log (i / 100) / Math.log (2) * 12 + 0.5);
+  j = (j < 0) ? 0 : (j > 200) ? 200 : j;
+  line += j.toString () + "," + (((i + 1) % 10) ? "" : "<br />  ");
+}
+document.write (line + "<br />};<br />");
+document.write ("static const uint8_t tab_log_10_lin[201] = {<br />  ");
+line = "";
+for (i = 0; i <= 200; i++) {
+  j = Math.floor (Math.pow (2, (i - 100) / 6) * 100 + 0.5);
+  j = (j < 0) ? 0 : (j > 200) ? 200 : j;
+  line += j.toString () + "," + (((i + 1) % 10) ? "" : "<br />  ");
+}
+document.write (line + "<br />};<br />");
+document.write ("static const uint8_t tab_lin_log_10[201] = {<br />  ");
+line = "";
+for (i = 0; i <= 200; i++) {
+  j = Math.floor (100 + Math.log (i / 100) / Math.log (2) * 6 + 0.5);
+  j = (j < 0) ? 0 : (j > 200) ? 200 : j;
+  line += j.toString () + "," + (((i + 1) % 10) ? "" : "<br />  ");
+}
+document.write (line + "<br />};<br />");
+</script>
+</body>
+</html>
+
+#endif
+
 void xine_set_param (xine_stream_t *s, int param, int value) {
   xine_stream_private_t *stream = (xine_stream_private_t *)s;
   xine_private_t *xine;
@@ -442,6 +492,32 @@ void xine_set_param (xine_stream_t *s, int param, int value) {
     break;
 
   case XINE_PARAM_AUDIO_AMP_LEVEL:
+    if (xine->audio_lin_levels) {
+      static const uint8_t tab_lin_log_10[201] = {
+          0, 60, 66, 70, 72, 74, 76, 77, 78, 79,
+         80, 81, 82, 82, 83, 84, 84, 85, 85, 86,
+         86, 86, 87, 87, 88, 88, 88, 89, 89, 89,
+         90, 90, 90, 90, 91, 91, 91, 91, 92, 92,
+         92, 92, 92, 93, 93, 93, 93, 93, 94, 94,
+         94, 94, 94, 95, 95, 95, 95, 95, 95, 95,
+         96, 96, 96, 96, 96, 96, 96, 97, 97, 97,
+         97, 97, 97, 97, 97, 98, 98, 98, 98, 98,
+         98, 98, 98, 98, 98, 99, 99, 99, 99, 99,
+         99, 99, 99, 99, 99,100,100,100,100,100,
+        100,100,100,100,100,100,101,101,101,101,
+        101,101,101,101,101,101,101,101,101,102,
+        102,102,102,102,102,102,102,102,102,102,
+        102,102,102,102,103,103,103,103,103,103,
+        103,103,103,103,103,103,103,103,103,103,
+        104,104,104,104,104,104,104,104,104,104,
+        104,104,104,104,104,104,104,104,104,105,
+        105,105,105,105,105,105,105,105,105,105,
+        105,105,105,105,105,105,105,105,105,106,
+        106,106,106,106,106,106,106,106,106,106,
+        106
+      };
+      value = (value < 0) ? 0 : (value > 200) ? 112 : tab_lin_log_10[value];
+    }
     xine->port_ticket->acquire (xine->port_ticket, 1);
     if (stream->s.audio_out) {
       int old_value = stream->s.audio_out->get_property (stream->s.audio_out, AO_PROP_AMP);
@@ -478,6 +554,32 @@ void xine_set_param (xine_stream_t *s, int param, int value) {
   case XINE_PARAM_EQ_4000HZ:
   case XINE_PARAM_EQ_8000HZ:
   case XINE_PARAM_EQ_16000HZ:
+    if (xine->audio_lin_levels) {
+      static const uint8_t tab_lin_log_05[201] = {
+          0, 20, 32, 39, 44, 48, 51, 54, 56, 58,
+         60, 62, 63, 65, 66, 67, 68, 69, 70, 71,
+         72, 73, 74, 75, 75, 76, 77, 77, 78, 79,
+         79, 80, 80, 81, 81, 82, 82, 83, 83, 84,
+         84, 85, 85, 85, 86, 86, 87, 87, 87, 88,
+         88, 88, 89, 89, 89, 90, 90, 90, 91, 91,
+         91, 91, 92, 92, 92, 93, 93, 93, 93, 94,
+         94, 94, 94, 95, 95, 95, 95, 95, 96, 96,
+         96, 96, 97, 97, 97, 97, 97, 98, 98, 98,
+         98, 98, 99, 99, 99, 99, 99, 99,100,100,
+        100,100,100,101,101,101,101,101,101,101,
+        102,102,102,102,102,102,103,103,103,103,
+        103,103,103,104,104,104,104,104,104,104,
+        105,105,105,105,105,105,105,105,106,106,
+        106,106,106,106,106,106,107,107,107,107,
+        107,107,107,107,107,108,108,108,108,108,
+        108,108,108,108,109,109,109,109,109,109,
+        109,109,109,109,110,110,110,110,110,110,
+        110,110,110,110,111,111,111,111,111,111,
+        111,111,111,111,111,112,112,112,112,112,
+        112
+      };
+      value = (value < 0) ? 0 : (value > 200) ? 112 : tab_lin_log_05[value];
+    }
     xine->port_ticket->acquire (xine->port_ticket, 1);
     if (stream->s.audio_out)
       stream->s.audio_out->set_property (stream->s.audio_out,
@@ -650,6 +752,17 @@ int xine_get_param (xine_stream_t *s, int param) {
     else
       ret = stream->s.audio_out->get_property (stream->s.audio_out, AO_PROP_AMP);
     xine->port_ticket->release (xine->port_ticket, 1);
+    if (xine->audio_lin_levels && (ret >= 0)) {
+      static const uint8_t tab_log_10_lin[108 - 54] = {
+                          0,  1,  1,  1,  1,  1,
+          1,  1,  1,  1,  2,  2,  2,  2,  2,  3,
+          3,  4,  4,  4,  5,  6,  6,  7,  8,  9,
+         10, 11, 13, 14, 16, 18, 20, 22, 25, 28,
+         31, 35, 40, 45, 50, 56, 63, 71, 79, 89,
+        100,112,126,141,159,178,200
+      };
+      ret = (ret < 54) ? 0 : (ret > 107) ? 200 : tab_log_10_lin[ret - 54];
+    }
     break;
 
   case XINE_PARAM_AUDIO_AMP_MUTE:
@@ -678,6 +791,23 @@ int xine_get_param (xine_stream_t *s, int param) {
       ret=  stream->s.audio_out->get_property (stream->s.audio_out,
 					     param - XINE_PARAM_EQ_30HZ + AO_PROP_EQ_30HZ);
     xine->port_ticket->release (xine->port_ticket, 1);
+    if (xine->audio_lin_levels && (ret >= 0)) {
+      static const uint8_t tab_log_05_lin[113 - 8] = {
+                                          0,  1,
+          1,  1,  1,  1,  1,  1,  1,  1,  1,  1,
+          1,  1,  1,  1,  1,  1,  1,  1,  2,  2,
+          2,  2,  2,  2,  2,  2,  2,  3,  3,  3,
+          3,  3,  4,  4,  4,  4,  4,  5,  5,  5,
+          6,  6,  6,  7,  7,  7,  8,  8,  9,  9,
+         10, 11, 11, 12, 13, 13, 14, 15, 16, 17,
+         18, 19, 20, 21, 22, 24, 25, 26, 28, 30,
+         31, 33, 35, 37, 40, 42, 45, 47, 50, 53,
+         56, 59, 63, 67, 71, 75, 79, 84, 89, 94,
+        100,106,112,119,126,133,141,150,159,168,
+        178,189,200
+      };
+      ret = (ret < 8) ? 0 : (ret > 112) ? 200 : tab_log_05_lin[ret - 8];
+    }
     break;
 
   case XINE_PARAM_VERBOSITY:
@@ -820,6 +950,84 @@ uint32_t xine_get_stream_info (xine_stream_t *s, int info) {
 
 const char *xine_get_meta_info (xine_stream_t *stream, int info) {
   return _x_meta_info_get_public(stream, info);
+}
+
+int xine_query_stream_info (xine_stream_t *stream, char *sbuf, size_t sblen, int *strings, int *ints) {
+  xine_stream_private_t *_s = (xine_stream_private_t *)stream;
+  static const uint8_t tab_special[sizeof (_s->stream_info) / sizeof (_s->stream_info[0])] = {
+    [XINE_STREAM_INFO_SEEKABLE] = 1,
+    [XINE_STREAM_INFO_HAS_CHAPTERS] = 2,
+    [XINE_STREAM_INFO_MAX_AUDIO_CHANNEL] = 3,
+    [XINE_STREAM_INFO_MAX_SPU_CHANNEL] = 4
+  };
+  int special_index[5] = {-1, -1, -1, -1, -1};
+  uint32_t u, p;
+
+  if (!_s) {
+    if (sbuf && sblen)
+      sbuf[0] = 0;
+    if (strings) {
+      for (u = 0; strings[u] >= 0; u++)
+        strings[0] = 0;
+    }
+    if (ints) {
+      for (u = 0; ints[u] >= 0; u++)
+        ints[0] = 0;
+    }
+    return 0;
+  }
+
+  p = 0;
+  _s = _s->side_streams[0];
+
+  xine_rwlock_rdlock (&_s->info_lock);
+  if (strings) {
+    if (sbuf && sblen)
+      sbuf[p++] = 0;
+    for (u = 0; strings[u] >= 0; u++) {
+      const char *st;
+      if (((uint32_t)strings[u] < sizeof (_s->meta_info) / sizeof (_s->meta_info[0]))
+        && ((st = _s->meta_info[strings[u]]))) {
+        size_t sl = xine_find_byte (st, 0) + 1;
+        if (p + sl > sblen)
+          break;
+        strings[u] = p;
+        memcpy (sbuf + p, st, sl);
+        p += sl;
+      } else {
+        strings[u] = 0;
+      }
+    }
+    for (; strings[u] >= 0; u++)
+      strings[u] = 0;
+  }
+  if (ints) {
+    for (u = 0; ints[u] >= 0; u++) {
+      if ((uint32_t)ints[u] < sizeof (_s->stream_info) / sizeof (_s->stream_info[0])) {
+        special_index[tab_special[ints[u]]] = u;
+        ints[u] = _s->stream_info[ints[u]];
+      } else {
+        ints[u] = 0;
+      }
+    }
+  }
+  xine_rwlock_unlock (&_s->info_lock);
+
+  if (special_index[1] >= 0)
+    ints[special_index[1]] =
+      (_s->s.input_plugin &&
+        (_s->s.input_plugin->get_capabilities (_s->s.input_plugin)
+          & (INPUT_CAP_SEEKABLE | INPUT_CAP_SLOW_SEEKABLE | INPUT_CAP_TIME_SEEKABLE))) ? 1 : 0;
+  if (special_index[2] >= 0)
+    ints[special_index[2]] =
+      (_s->demux.plugin && (_s->demux.plugin->get_capabilities (_s->demux.plugin) & DEMUX_CAP_CHAPTERS)) ||
+      (_s->s.input_plugin && (_s->s.input_plugin->get_capabilities (_s->s.input_plugin) & INPUT_CAP_CHAPTERS));
+  if (special_index[3] >= 0)
+    ints[special_index[3]] = _s->audio_track_map_entries;
+  if (special_index[4] >= 0)
+    ints[special_index[4]] = _s->spu_track_map_entries;
+
+  return p;
 }
 
 xine_osd_t *xine_osd_new(xine_stream_t *stream, int x, int y, int width, int height) {
